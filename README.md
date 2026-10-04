@@ -1,18 +1,19 @@
 # mini-cesium
 
-零依赖的手写三维地球引擎。纯 WebGL + 原生 JavaScript,从椭球数学、瓦片金字塔到四叉树 LOD,全部自己实现。
+零依赖的手写三维地球引擎。纯 WebGPU + 原生 JavaScript,从椭球数学、瓦片金字塔到四叉树 LOD,全部自己实现。
 
 > Inspired by Cesium。本仓库不是 Cesium 的绑定、封装或教学示例,与 CesiumJS 项目无任何关联。
 
 ## 状态
 
-设计阶段。功能清单与里程碑见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+M0(渲染底座)已完成:线框地球 demo 见 `demo/m0-wireframe-globe.html`。功能清单与里程碑见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## 零依赖声明
 
 - 运行时依赖:**0**。`src/` 下不 import 任何第三方库。
-- 无构建步骤。每个 demo 是一个可直接双击打开的单 HTML 文件。
-- 开发期允许使用开发工具(测试运行器、本地服务器),但产物不依赖它们。
+- 无构建步骤。数学库由 Node 内置测试运行器直接测试,不需要任何测试框架。
+- **只适配最新 WebGPU**(Chrome/Edge 等已启用 WebGPU 的浏览器)。不写任何兼容判断与回退路径;不支持的浏览器会得到一条可读报错,而不是白屏。
+- demo 使用相对路径 ES Module,需经静态服务器打开(如 `python -m http.server`),file:// 会被浏览器 CORS 拦截——这是浏览器规则,不是项目依赖。
 
 ## 目录结构(规划)
 

@@ -1,0 +1,10 @@
+{
+  "name": "mini-cesium",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Zero-dependency hand-written 3D globe engine on WebGPU. Teaching project.",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
