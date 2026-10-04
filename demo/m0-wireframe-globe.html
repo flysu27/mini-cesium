@@ -19,36 +19,33 @@
 /**
  * M0 验收:渲染一个线框球,拖拽不飘不抖,松手有惯性。
  *
- * 渲染流水线(每一帧都走这条链路,M0 之后所有 demo 都是这个骨架):
- *   CPU 侧:几何生成 → GPU Buffer 上传(一次性)
- *   每帧  :算 MVP → writeBuffer 更新 uniform → encode 渲染命令 → 提交
+ * 本页只包含三类内容(教学主体):
+ *   1. 数学   —— perspective × view 矩阵乘法(渲染的本质就这一句)
+ *   2. 几何   —— 球面参数化(见 src/scene/sphere.js)
+ *   3. 着色器 —— WGSL 里的 MVP 变换与颜色输出
+ * WebGPU 的全部样板配置(管线/缓冲/绑定组/命令编码)已隔离进
+ * src/renderer/engine.js,约定与推导见该文件头注释,此处当黑盒用。
  *
- * 注意:本页使用相对路径 ES Module 导入,必须经静态服务器打开
- * (如 python -m http.server),file:// 下浏览器会因 CORS 拦截模块加载。
+ * 注意:相对路径 ES Module 必须经静态服务器打开(如 python -m http.server),
+ * file:// 下浏览器会因 CORS 拦截模块加载。
  */
-import { initContext } from '../src/renderer/device.js';
-import { createMesh } from '../src/renderer/mesh.js';
+import { createEngine, GLOBALS_WGSL, OBJECT_WGSL } from '../src/renderer/engine.js';
 import { createSphereGeometry } from '../src/scene/sphere.js';
 import { OrbitCamera } from '../src/scene/camera.js';
 import { multiply, perspective } from '../src/math/mat4.js';
 
 const canvas = document.getElementById('gpu');
-const { device, context, format } = await initContext(canvas);
+const engine = await createEngine(canvas);
 
 // ── 几何:单位球 + 线框边索引 ────────────────────────────────────
 const geometry = createSphereGeometry({ radius: 1, latBands: 32, lonBands: 48 });
-const mesh = createMesh(device, geometry, { withWireframe: true });
+const mesh = engine.mesh(geometry, { wireframe: true });
 
-// ── 着色器(WGSL)────────────────────────────────────────────────
-// M0 只需要"MVP 变换 + 纯色输出"。着色器随 demo 就近存放,
-// M1 引入光照时再抽成共享模块。
-const shader = device.createShaderModule({
-  code: /* wgsl */ `
-    struct Uniforms {
-      mvp   : mat4x4f,   // 投影 × 视图(模型恒为单位阵)
-      color : vec4f,
-    };
-    @group(0) @binding(0) var<uniform> u : Uniforms;
+// ── 管线:一行声明,代替裸 WebGPU 的整棵配置树 ──────────────────
+const pipeline = engine.pipeline({
+  shaderCode: /* wgsl */ `
+    ${GLOBALS_WGSL}
+    ${OBJECT_WGSL}
 
     // 顶点着色器:唯一职责是把本地坐标搬到裁剪空间。
     // @builtin(position) 就是裁剪空间坐标,硬件随后做透视除法与视口变换。
@@ -56,117 +53,48 @@ const shader = device.createShaderModule({
     @vertex
     fn vs(@location(0) position : vec3f) -> VSOut {
       var out : VSOut;
-      out.pos = u.mvp * vec4f(position, 1.0);
+      out.pos = globals.viewProj * vec4f(position, 1.0);
       return out;
     }
 
     @fragment
     fn fs() -> @location(0) vec4f {
-      return u.color;
+      return object.data[0];   // 逐物体颜色,由 JS 端每帧写入
     }
   `,
+  topology: 'line-list',   // 线框的关键:按"边索引"两两成对画线
+  objectUniform: true,
 });
 
-const pipeline = device.createRenderPipeline({
-  // layout 'auto':让 WebGPU 根据 shader 里的 @group/@binding 自动推导绑定布局。
-  // 代价是跨 pipeline 不能共享 layout;M4 出多 pipeline 时再显式声明。
-  layout: 'auto',
-  vertex: {
-    module: shader,
-    entryPoint: 'vs',
-    buffers: [{
-      arrayStride: 12,             // 每顶点 3 × float32
-      attributes: [{
-        shaderLocation: 0,         // 对应 vs 的 @location(0)
-        offset: 0,
-        format: 'float32x3',
-      }],
-    }],
-  },
-  fragment: {
-    module: shader,
-    entryPoint: 'fs',
-    targets: [{ format }],         // 必须与画布格式一致,否则报错
-  },
-  primitive: {
-    topology: 'line-list',         // 线框的关键:按"边索引"两两成对画线
-  },
-});
-
-// uniform buffer:mat4(64B) + vec4(16B) = 80B,按 16 字节对齐要求刚好合法
-const uniformBuffer = device.createBuffer({
-  size: 80,
-  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(uniformBuffer, 64, new Float32Array([0.55, 0.68, 0.85, 1.0]));
-
-const bindGroup = device.createBindGroup({
-  layout: pipeline.getBindGroupLayout(0),
-  entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
-});
-
-// ── 相机与自适应尺寸 ────────────────────────────────────────────
+// ── 相机 ────────────────────────────────────────────────────────
 const camera = new OrbitCamera({ distance: 3 });
 camera.attach(canvas);
 
-function resize() {
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.floor(canvas.clientWidth * dpr);
-  const h = Math.floor(canvas.clientHeight * dpr);
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
-  }
-}
-window.addEventListener('resize', resize);
-resize();
-
-// ── 渲染循环 ────────────────────────────────────────────────────
-let last = performance.now();
-let fpsAccum = 0, fpsCount = 0;
+// ── 渲染循环:回调里只剩数学 ────────────────────────────────────
 const fpsEl = document.getElementById('fps');
+let fpsAccum = 0, fpsCount = 0;
 
-function frame(now) {
-  const dt = (now - last) / 1000;
-  last = now;
+engine.frame(({ viewProj, aspect, dt }) => {
+  camera.update();
+
+  // MVP = P · V · M。模型恒为单位阵,所以直接 P·V。
+  // 乘法顺序:perspective 在最左 = 最后作用于顶点,这正是"投影"的正确位置。
+  viewProj.set(multiply(
+    perspective(Math.PI / 3, aspect, 0.1, 100),
+    camera.viewMatrix()
+  ));
+
+  engine.draw(pipeline, mesh, {
+    wireframe: true,
+    uniform: new Float32Array([0.55, 0.68, 0.85, 1.0]), // 线框颜色
+  });
+
   fpsAccum += dt; fpsCount++;
   if (fpsAccum > 0.5) {
     fpsEl.textContent = Math.round(fpsCount / fpsAccum);
     fpsAccum = 0; fpsCount = 0;
   }
-
-  camera.update();
-  resize(); // 分屏拖动等场景 resize 事件可能不触发,每帧兜底(成本为一次比较)
-
-  // MVP = P · V · M。模型恒为单位阵,所以直接 P·V。
-  // 乘法顺序:perspective 在最左 = 最后作用于顶点,这正是"投影"的正确位置。
-  const mvp = multiply(
-    perspective(Math.PI / 3, canvas.width / canvas.height, 0.1, 100),
-    camera.viewMatrix()
-  );
-  device.queue.writeBuffer(uniformBuffer, 0, mvp);
-
-  const encoder = device.createCommandEncoder();
-  const pass = encoder.beginRenderPass({
-    colorAttachments: [{
-      view: context.getCurrentTexture().createView(),
-      clearValue: { r: 0.043, g: 0.055, b: 0.078, a: 1 }, // #0b0e14
-      loadOp: 'clear',        // 每帧整屏清掉(线框没有遮挡关系,暂不需要深度缓冲)
-      storeOp: 'store',
-    }],
-  });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bindGroup);
-  pass.setVertexBuffer(0, mesh.vertexBuffer);
-  pass.setIndexBuffer(mesh.edgeIndexBuffer, 'uint32');
-  pass.drawIndexed(mesh.edgeCount);
-  pass.end();
-  device.queue.submit([encoder.finish()]);
-
-  requestAnimationFrame(frame);
-}
-
-requestAnimationFrame(frame);
+});
 </script>
 </body>
 </html>

@@ -1,5 +1,8 @@
 /**
- * 网格资源封装:顶点缓冲 + 索引缓冲 + (可选)线框边索引
+ * 网格几何算法:三角网格 → 唯一边索引(线框用)
+ *
+ * (GPU 资源上传与封装已移至 engine.js 的 engine.mesh —— 职责边界:
+ *  mesh.js 管几何算法,engine.js 管"接线"。)
  *
  * WebGPU 没有 WebGL 的 gl.LINES 全局开关,也没有"自动线框"。
  * 想画线,只有一条正路:把拓扑设为 'line-list',喂一份"边索引"。
@@ -40,47 +43,3 @@ export function buildEdgeIndices(triIndices) {
   return new Uint32Array(edges);
 }
 
-/**
- * 上传网格到 GPU。
- * 只传 positions:M0 用不到法线,M1 光照时再加第二个缓冲。
- * 按需创建是用 WebGPU 的正确姿势——每多传一字节都是显存。
- *
- * @returns {{vertexBuffer: GPUBuffer, indexBuffer: GPUBuffer,
- *            edgeIndexBuffer: GPUBuffer|null, vertexCount: number,
- *            indexCount: number, edgeCount: number}}
- */
-export function createMesh(device, geometry, { withWireframe = false } = {}) {
-  // GPUBufferUsage.VERTEX:作为顶点属性数据源被 pipeline 读取
-  const vertexBuffer = device.createBuffer({
-    size: geometry.positions.byteLength,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(vertexBuffer, 0, geometry.positions);
-
-  const indexBuffer = device.createBuffer({
-    size: geometry.indices.byteLength,
-    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(indexBuffer, 0, geometry.indices);
-
-  let edgeIndexBuffer = null;
-  let edgeCount = 0;
-  if (withWireframe) {
-    const edgeIndices = buildEdgeIndices(geometry.indices);
-    edgeCount = edgeIndices.length;
-    edgeIndexBuffer = device.createBuffer({
-      size: edgeIndices.byteLength,
-      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(edgeIndexBuffer, 0, edgeIndices);
-  }
-
-  return {
-    vertexBuffer,
-    indexBuffer,
-    edgeIndexBuffer,
-    vertexCount: geometry.positions.length / 3,
-    indexCount: geometry.indices.length,
-    edgeCount,
-  };
-}
