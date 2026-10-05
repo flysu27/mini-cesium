@@ -70,7 +70,8 @@ export class OrbitCamera {
       this._lastX = e.clientX;
       this._lastY = e.clientY;
 
-      // 灵敏度:0.005 rad/px ≈ 拖 360px 转一整圈,手感居中。
+      // 灵敏度:0.005 rad/px。换算一下才直观:拖 360px 转约 103°,
+      // 转满一整圈要 2π/0.005 ≈ 1257px —— 大致等于一次横跨屏幕的拖动。
       const s = 0.005;
       this.yaw += dx * s;
       this.pitch += dy * s;

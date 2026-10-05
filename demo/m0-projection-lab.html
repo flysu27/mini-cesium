@@ -23,6 +23,15 @@
             font-size: 12px; color: var(--t2); background: rgba(255,255,255,.72);
             padding: 5px 10px; border-radius: 6px; user-select: none; }
   #legend i { display: inline-block; width: 14px; height: 2px; margin-right: 5px; vertical-align: middle; }
+  #legend i.bk { width: 9px; height: 9px; border-radius: 2px; }  /* 面用方块、线用横杠:图例本身就说清"哪个是面" */
+  /* 三支笔。每支同时管一条棱线和一个面(它们在几何上就是同一条边界),所以并排摆。 */
+  .swatches { display: flex; gap: 7px; margin: 7px 0 8px; }
+  .sw { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+        color: var(--t2); font-size: 11px; cursor: pointer; }
+  .sw input[type=color] { width: 100%; height: 22px; padding: 0; border: 1px solid var(--line);
+                          border-radius: 5px; background: none; cursor: pointer; }
+  .sw input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+  .sw input[type=color]::-webkit-color-swatch { border: none; border-radius: 3px; }
   aside { width: 348px; background: #FFF; border-left: 0.5px solid var(--line);
           overflow-y: auto; padding: 16px 18px 28px; }
   h1 { font-size: 15px; font-weight: 500; margin: 0 0 4px; }
@@ -66,10 +75,12 @@
     <canvas id="gpu"></canvas>
     <div id="hint">拖拽旋转视角 · 滚轮缩放 · 右侧滑块改参数</div>
     <div id="legend">
-      <span><i style="background:#378ADD"></i>视锥体</span>
+      <span><i style="background:#0E7490"></i>近平面(投影面)</span>
+      <span><i style="background:#378ADD"></i>侧面 / 母线</span>
+      <span><i style="background:#94A3B8"></i>远平面</span>
       <span><i style="background:#BA7517"></i>共用斜边(过 P 的视线)</span>
       <span><i style="background:#7C3AED"></i>相似三角形的边</span>
-      <span><i style="background:#8B5CF6"></i>两个三角形填的面(嵌套)</span>
+      <span><i class="bk" style="background:#8B5CF6"></i>两个三角形填的面(嵌套)</span>
       <span><i style="background:#0F6E56"></i>p′ / 等 NDC 线</span>
     </div>
   </div>
@@ -84,6 +95,18 @@
     <div class="row"><span>fovY</span><input id="s-fov" type="range" min="20" max="110" step="1"><b id="v-fov"></b></div>
     <div class="row"><span>宽高比 aspect</span><input id="s-aspect" type="range" min="0.5" max="2.6" step="0.05"><b id="v-aspect"></b></div>
     <p class="cap" style="margin:2px 0 0">aspect = 宽 / 高。它只出现在 x 的公式里——y 和 z 完全不知道它的存在。</p>
+
+    <h2>视锥体怎么画(给它上色)</h2>
+    <div class="swatches">
+      <label class="sw"><input type="color" id="p-near" value="#0e7490"><span>近平面</span></label>
+      <label class="sw"><input type="color" id="p-far" value="#94a3b8"><span>远平面</span></label>
+      <label class="sw"><input type="color" id="p-side" value="#378add"><span>侧面 / 母线</span></label>
+    </div>
+    <label class="chk"><input id="c-wire" type="checkbox" checked> 画棱线(12 条边)</label>
+    <label class="chk"><input id="c-fill" type="checkbox" checked> 给六个面填半透明色</label>
+    <p class="cap" style="margin:2px 0 0">色块点一下就能改。<b>近平面是投影真正发生的地方</b>,所以默认给它最重的颜色;
+      远平面退到后面,颜色也退。侧面填上色之后,视锥体才从一个"线架子"变成一个<b>有体积的壳</b>——
+      P 到底在锥里还是锥外,一眼就能看出来。</p>
 
     <h2>点 P 的位置</h2>
     <div class="row"><span>深度 d</span><input id="s-d" type="range" step="0.1"><b id="v-d"></b></div>
@@ -258,24 +281,36 @@ const fillPipeline = engine && engine.pipeline({
 });
 
 /** 一个三角形 = 3 个顶点 + 恒等索引(0,1,2)。顶点数恒定,可用 updateMesh 复用显存。 */
-function createFace(id, color, alpha) {
+function createTriGroup(id, triCount, color, alpha) {
+  const positions = new Float32Array(triCount * 9);
+  const indices = new Uint32Array(triCount * 3);
+  for (let i = 0; i < indices.length; i++) indices[i] = i;   // 恒等索引:第 i 个顶点就是第 i 个顶点
   return {
-    id,
-    positions: new Float32Array(9),
-    indices: new Uint32Array([0, 1, 2]),
+    id, triCount, positions, cursor: 0,
     color: new Float32Array([...color, alpha]),
-    mesh: engine && engine.mesh({ positions: new Float32Array(9), indices: new Uint32Array([0, 1, 2]) }),
+    mesh: engine && engine.mesh({ positions: new Float32Array(triCount * 9), indices }),
   };
 }
-function setFace(f, a, b, c) {
-  const p = f.positions;
-  p[0] = a[0]; p[1] = a[1]; p[2] = a[2];
-  p[3] = b[0]; p[4] = b[1]; p[5] = b[2];
-  p[6] = c[0]; p[7] = c[1]; p[8] = c[2];
+/** 塞进一个三角形。顶点用 set 整块拷,可读性和 writeVertex 一样,但少一半代码。 */
+function tri(g, a, b, c) {
+  const i = g.cursor++ * 9;
+  g.positions.set(a, i); g.positions.set(b, i + 3); g.positions.set(c, i + 6);
 }
-const faceBig   = createFace('faceBig',   [0.486, 0.227, 0.929], 0.14);
-const faceSmall = createFace('faceSmall', [0.545, 0.361, 0.965], 0.44);
-const faces = [faceBig, faceSmall];
+/** 四边形 a→b→c→d(沿边绕一圈)= 两个三角形。视锥体的每个面都是四边形。 */
+function quad(g, a, b, c, d) { tri(g, a, b, c); tri(g, a, c, d); }
+
+// 视锥体的壳:近平面 2 + 远平面 2 + 四个侧面 8 = 12 个三角形。
+// 三组分开是因为颜色不同;alpha 也各不同 —— 侧面面积最大,最淡,免得糊住里面的主角。
+// 近平面最重(0.13):它是投影真正发生的那个平面,P 的像 p′ 就钉在上面。
+const fNear = createTriGroup('fNear', 2, [0.055, 0.455, 0.565], 0.13);
+const fFar  = createTriGroup('fFar',  2, [0.580, 0.639, 0.722], 0.08);
+const fSide = createTriGroup('fSide', 8, [0.216, 0.541, 0.867], 0.06);
+const coneFaces = [fNear, fFar, fSide];
+
+// 相似三角形:一组一个三角形。小三角 alpha 更高(0.44),叠在大三角(0.14)上才看得出"套在里面"。
+const faceBig   = createTriGroup('faceBig',   1, [0.486, 0.227, 0.929], 0.14);
+const faceSmall = createTriGroup('faceSmall', 1, [0.545, 0.361, 0.965], 0.44);
+const triFaces = [faceBig, faceSmall];
 
 // ── 几何分组:一组 = 一个颜色 = 一次 draw(靠 key 各自持有 uniform)────
 // 每组线段数固定不变(engine.updateMesh 要求顶点数恒定),所以先声明再填。
@@ -289,14 +324,23 @@ function createGroup(id, lineCount, color) {
     mesh: engine && engine.mesh({ positions, indices }),
   };
 }
-const gFrustum = createGroup('frustum', 12, [0.216, 0.541, 0.867]);
+// 视锥体原来是 12 条线挤在一个组里、一个颜色 —— 近平面、远平面、母线糊成一片,
+// 看不出哪个是哪个。拆成三组各持一个颜色,零成本(每组本来就是一次 draw):
+//   近平面 = 投影面,给最重最饱和的青;
+//   远平面 = 退到后面,颜色也退成灰蓝;
+//   母线   = 眼睛射向远平面四角的 4 条棱,中性蓝。
+const gNear = createGroup('near', 4, [0.055, 0.455, 0.565]);
+const gFar  = createGroup('far',  4, [0.580, 0.639, 0.722]);
+const gSide = createGroup('side', 4, [0.216, 0.541, 0.867]);
+const coneWire = [gNear, gFar, gSide];
+
 const gAxis    = createGroup('axis',     1, [0.61, 0.64, 0.70]);
 const gRay     = createGroup('ray',      1, [0.73, 0.46, 0.09]);
 const gLeg     = createGroup('leg',      3, [0.486, 0.227, 0.929]);
 const gFoot    = createGroup('foot',     6, [0.655, 0.545, 0.980]);
 const gMark    = createGroup('mark',     9, [0.847, 0.353, 0.188]);
 const gLevel   = createGroup('level',    1, [0.059, 0.431, 0.337]);
-const groups = [gFrustum, gAxis, gRay, gLeg, gFoot, gMark, gLevel];
+const groups = [gNear, gFar, gSide, gAxis, gRay, gLeg, gFoot, gMark, gLevel];
 
 function line(g, a, b) {
   const i = g.cursor++ * 6;
@@ -314,14 +358,26 @@ function buildScene() {
   const { n, f, d, x, y, aspect } = state;
   const hn = n * tanHalf(), hf = f * tanHalf();
   for (const g of groups) g.cursor = 0;
+  for (const g of coneFaces) g.cursor = 0;
+  for (const g of triFaces) g.cursor = 0;
 
   // 视锥体:近平面矩形 + 远平面矩形 + 4 条母线(近平面角点自然落在母线上,因为 n/f 等比)
   // 矩形半宽 = 半高 · aspect:aspect 就是"截面横着比竖着宽多少倍"。
+  // 顶点按"绕一圈"的顺序给(左上→右上→右下→左下),这样下面填面时四边形不用再排顺序。
   const near = [[-hn * aspect, hn, -n], [hn * aspect, hn, -n], [hn * aspect, -hn, -n], [-hn * aspect, -hn, -n]];
   const far  = [[-hf * aspect, hf, -f], [hf * aspect, hf, -f], [hf * aspect, -hf, -f], [-hf * aspect, -hf, -f]];
-  for (let i = 0; i < 4; i++) line(gFrustum, near[i], near[(i + 1) % 4]);
-  for (let i = 0; i < 4; i++) line(gFrustum, far[i], far[(i + 1) % 4]);
-  for (let i = 0; i < 4; i++) line(gFrustum, [0, 0, 0], far[i]);
+  for (let i = 0; i < 4; i++) line(gNear, near[i], near[(i + 1) % 4]);
+  for (let i = 0; i < 4; i++) line(gFar,  far[i],  far[(i + 1) % 4]);
+  for (let i = 0; i < 4; i++) line(gSide, [0, 0, 0], far[i]);
+
+  // 视锥体的六个面。近、远各是一个四边形;四个侧面是"近平面的第 i 条棱
+  // 连到对应的远平面第 i 条棱"围成的梯形 —— 顶点顺序两边一致,直接拼就行。
+  quad(fNear, near[0], near[1], near[2], near[3]);
+  quad(fFar,  far[0],  far[1],  far[2],  far[3]);
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4;
+    quad(fSide, near[i], near[j], far[j], far[i]);
+  }
 
   // 视线轴 + 眼睛标记
   line(gAxis, [0, 0, 1.5], [0, 0, -f - 1]);
@@ -343,8 +399,8 @@ function buildScene() {
   const Fb = [x, 0, -d];                       // 大三角形的垂足
   const Fs = [x * n / d, 0, -n];               // 小三角形的垂足(在近平面上)
 
-  setFace(faceBig, [0, 0, 0], Fb, P);          // 填面:大三角形
-  setFace(faceSmall, [0, 0, 0], Fs, p);        // 填面:小三角形(套在里面)
+  tri(faceBig, [0, 0, 0], Fb, P);              // 填面:大三角形
+  tri(faceSmall, [0, 0, 0], Fs, p);            // 填面:小三角形(套在里面)
 
   line(gRay, [0, 0, 0], Pe);                   // 共用斜边
   line(gLeg, [0, 0, 0], Fb);                   // 大三角形沿 z 的长腿(长度 √(x²+d²))
@@ -361,12 +417,24 @@ function buildScene() {
   const lv = yNdc() * hn;
   line(gLevel, [-hn * aspect, lv, -n], [hn * aspect, lv, -n]);
 
+  // 数量对不上立刻报错 —— 静默画错比崩溃更难查
   for (const g of groups) {
     if (g.cursor !== g.lineCount) {
       throw new Error(`${g.id} 线段数不符:${g.cursor} ≠ ${g.lineCount}`);
     }
   }
+  for (const g of [...coneFaces, ...triFaces]) {
+    if (g.cursor !== g.triCount) {
+      throw new Error(`${g.id} 三角形数不符:${g.cursor} ≠ ${g.triCount}`);
+    }
+  }
 }
+
+// ── 显示开关:视锥体的棱线和面可以分别关掉 ──────────────────────
+// 为什么要能关:壳虽然只有 0.06~0.13 的 alpha,叠在画面上多少会稀释主角。
+// 想看纯粹的相似三角形骨架时,把壳关掉,画面立刻回到"只有线"。
+// 用模块级变量而不是每帧读 DOM —— 渲染循环一帧跑 60 次,不该去碰 DOM。
+let showWire = true, showFill = true;
 
 // ── 观察用相机(看这个场景,不是被研究的那个相机)────────────────
 const labCamera = new OrbitCamera({
@@ -376,6 +444,12 @@ const labCamera = new OrbitCamera({
 labCamera.attach(canvas);
 
 // 没有 engine 就整个跳过渲染循环 —— 但下面 2D 面板的初始化与事件绑定照旧执行。
+// 面统一走这个:面和线共用一个 mesh 覆写路径,只有管线不同。
+function drawFace(f) {
+  engine.updateMesh(f.mesh, { positions: f.positions });
+  engine.draw(fillPipeline, f.mesh, { uniform: f.color, key: f.id });
+}
+
 if (engine) engine.frame(({ viewProj, aspect }) => {
   labCamera.update();
   viewProj.set(multiply(
@@ -384,16 +458,17 @@ if (engine) engine.frame(({ viewProj, aspect }) => {
   ));
 
   buildScene();
-  for (const g of groups) {
+  // 绘制顺序 = 叠色顺序,因为所有面都关掉了深度写入(depthWrite:false),
+  // 谁后画谁在上面。壳 → 线 → 相似三角形面,主次分明:
+  //   最外层是视锥体的半透明壳(0.06~0.13),只负责交代"体积";
+  //   中间是各种棱线,都是实心的 1px,看得清;
+  //   最上层是那两个嵌套三角形(0.14 / 0.44),它们是这一节的真正主角。
+  if (showFill) for (const f of coneFaces) drawFace(f);
+  if (showWire) for (const g of groups) {
     engine.updateMesh(g.mesh, { positions: g.positions });
     engine.draw(pipeline, g.mesh, { uniform: g.color, key: g.id });
   }
-  // 面放在所有线之后:半透明 + depthWrite(false),所以它只负责"染一下",
-  // 不会挡住任何东西;与它共面的轮廓线靠 depthBias 保证仍然压在上面。
-  for (const f of faces) {
-    engine.updateMesh(f.mesh, { positions: f.positions });
-    engine.draw(fillPipeline, f.mesh, { uniform: f.color, key: f.id });
-  }
+  for (const f of triFaces) drawFace(f);
 });
 
 // ── UI 绑定 ─────────────────────────────────────────────────────
@@ -858,6 +933,42 @@ for (const [key, input] of Object.entries(sliders)) {
 
 // 1/d 横轴开关:换轴时要重画曲线,也要更新说明文字
 el('c-recip').addEventListener('change', refreshAll);
+
+// ── 视锥体上色:三支笔 ──────────────────────────────────────────
+// 每支笔同时管一条棱线和一个面 —— 因为它们在几何上本来就是同一条边界
+// (近平面矩形的四条边,就是近平面这个四边形的轮廓)。分成两支反而要多解释一遍。
+//
+// 颜色存在 group.color 这个 Float32Array 里,engine.draw 每帧读的就是它的引用,
+// 所以改颜色只要**原地覆写**数组内容,不用重建 mesh、不用重配管线:
+// 第 4 位 alpha 保持不动(线是 1,面各自不同),只改前三位 RGB。
+const pens = {
+  near: [gNear, fNear],
+  far:  [gFar,  fFar],
+  side: [gSide, fSide],
+};
+
+function hexToRgb(hex) {
+  const v = parseInt(hex.slice(1), 16);
+  return [(v >> 16 & 255) / 255, (v >> 8 & 255) / 255, (v & 255) / 255];
+}
+
+function paint(name) {
+  const input = el('p-' + name);
+  // <input type="color"> 的值恒为 #rrggbb。不是这个形状(浏览器不支持)就原样保留默认色。
+  if (!/^#[0-9a-f]{6}$/i.test(input.value)) return;
+  const [r, g, b] = hexToRgb(input.value);
+  for (const target of pens[name]) {
+    target.color[0] = r; target.color[1] = g; target.color[2] = b;
+  }
+}
+
+for (const name of Object.keys(pens)) {
+  el('p-' + name).addEventListener('input', () => paint(name));
+  paint(name);   // 面板里写死的初始值 = 代码里的默认色,以面板为准,两边不会走岔
+}
+
+el('c-wire').addEventListener('change', (e) => { showWire = e.target.checked; });
+el('c-fill').addEventListener('change', (e) => { showFill = e.target.checked; });
 
 refreshAll();
 </script>
