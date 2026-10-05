@@ -14,11 +14,12 @@
  *   更直接的记法:把"整个世界"反过来转一遍,相机就回到了标准位姿
  *   (原点、看向 -Z)。于是:
  *
- *     view = T(0,0,-d) · Rx(pitch) · Ry(yaw)
+ *     view = T(0,0,-d) · Rx(pitch) · Ry(yaw) · T(-target)
  *
- *   读法(从右往左作用到顶点上):先把世界绕 Y 转 yaw,
- *   再绕 X 转 pitch,再推远 d —— 相机在原点看向 -Z。
+ *   读法(从右往左作用到顶点上):先把世界平移,让 target 落到原点;
+ *   再把世界绕 Y 转 yaw、绕 X 转 pitch;最后推远 d —— 相机在原点看向 -Z。
  *   注意乘法顺序不可换(矩阵乘法不交换),M0 测试会钉死这一点。
+ *   最右边的 T(-target) 就是"看着哪个点";M0 只看原点,target 默认 [0,0,0]。
  *
  * 惯性:松手后角速度按帧衰减。
  *   严格做法是解微分方程 dx/dt = -kx,得到指数衰减 exp(-k·dt);
@@ -34,13 +35,18 @@ export class OrbitCamera {
    * @param {number} [opts.distance=3]   初始距离
    * @param {number} [opts.yaw=0.6]      初始方位角(弧度)
    * @param {number} [opts.pitch=0.4]    初始俯仰角(弧度)
+   * @param {number[]} [opts.target=[0,0,0]] 注视点(M5 的 flyTo 会动态改它)
+   * @param {number} [opts.minDistance=1.2]  最近可缩放距离(随场景尺度调整)
+   * @param {number} [opts.maxDistance=20]   最远可缩放距离
    */
-  constructor({ distance = 3, yaw = 0.6, pitch = 0.4 } = {}) {
+  constructor({ distance = 3, yaw = 0.6, pitch = 0.4, target = [0, 0, 0],
+    minDistance = 1.2, maxDistance = 20 } = {}) {
     this.distance = distance;
     this.yaw = yaw;
     this.pitch = pitch;
-    this.minDistance = 1.2;
-    this.maxDistance = 20;
+    this.target = target;
+    this.minDistance = minDistance;
+    this.maxDistance = maxDistance;
 
     // 惯性角速度(弧度/帧)。拖拽时被持续覆写,松手后开始衰减。
     this._vyaw = 0;
@@ -108,11 +114,15 @@ export class OrbitCamera {
     this._vpitch *= 0.94;
   }
 
-  /** 视图矩阵 = T(0,0,-d) · Rx(pitch) · Ry(yaw),见文件头推导。 */
+  /** 视图矩阵 = T(0,0,-d) · Rx(pitch) · Ry(yaw) · T(-target),见文件头推导。 */
   viewMatrix() {
     return multiply(
       translation(0, 0, -this.distance),
-      multiply(rotationX(this.pitch), rotationY(this.yaw))
+      multiply(
+        rotationX(this.pitch),
+        multiply(rotationY(this.yaw),
+          translation(-this.target[0], -this.target[1], -this.target[2]))
+      )
     );
   }
 }

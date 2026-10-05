@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>mini-cesium · M0 投影实验室(可交互 3D)</title>
+<style>
+  :root { --line: #E3E3DE; --t1: #1F2937; --t2: #6B7280; --t3: #9CA3AF; --accent: #185FA5; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #F7F7F5;
+               font: 13px/1.6 system-ui, "Segoe UI", "PingFang SC", sans-serif; color: var(--t1); }
+  #app { display: flex; height: 100%; }
+  #stage { flex: 1; position: relative; min-width: 0; }
+  #gpu { width: 100%; height: 100%; display: block; cursor: grab; }
+  #gpu:active { cursor: grabbing; }
+  #hint { position: absolute; left: 14px; top: 12px; color: var(--t2); font-size: 12px;
+          background: rgba(255,255,255,.72); padding: 4px 8px; border-radius: 6px; user-select: none; }
+  #legend { position: absolute; left: 14px; bottom: 12px; display: flex; gap: 14px;
+            font-size: 12px; color: var(--t2); background: rgba(255,255,255,.72);
+            padding: 5px 10px; border-radius: 6px; user-select: none; }
+  #legend i { display: inline-block; width: 14px; height: 2px; margin-right: 5px; vertical-align: middle; }
+  aside { width: 348px; background: #FFF; border-left: 0.5px solid var(--line);
+          overflow-y: auto; padding: 16px 18px 28px; }
+  h1 { font-size: 15px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: var(--t2); font-size: 12px; margin: 0 0 16px; }
+  h2 { font-size: 13px; font-weight: 500; margin: 18px 0 8px; color: var(--t1); }
+  .row { display: grid; grid-template-columns: 84px 1fr 54px; align-items: center; gap: 8px; margin: 7px 0; }
+  .row span { color: var(--t2); font-size: 12px; }
+  .row b { font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .fx { background: #F7F7F5; border-radius: 8px; padding: 9px 11px; margin: 6px 0;
+        font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.75; }
+  .fx em { font-style: normal; color: var(--accent); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+  .ok { background: #E1F5EE; color: #085041; }
+  .no { background: #FCEBEB; color: #A32D2D; }
+  canvas.view { display: block; margin: 6px 0 2px; }
+  .cap { color: var(--t3); font-size: 12px; margin-bottom: 8px; }
+  ol { padding-left: 18px; margin: 6px 0; color: var(--t2); font-size: 12px; }
+  ol li { margin-bottom: 7px; }
+  ol b { color: var(--t1); font-weight: 500; }
+  .ndcWrap { display: flex; gap: 14px; align-items: flex-start; }
+  .ndcWrap p { margin: 4px 0 0; color: var(--t2); font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="gpu"></canvas>
+    <div id="hint">拖拽旋转视角 · 滚轮缩放 · 右侧滑块改参数</div>
+    <div id="legend">
+      <span><i style="background:#378ADD"></i>视锥体</span>
+      <span><i style="background:#BA7517"></i>P 与视线</span>
+      <span><i style="background:#0F6E56"></i>p′ / 等 NDC 线</span>
+    </div>
+  </div>
+
+  <aside>
+    <h1>投影实验室</h1>
+    <p class="sub">拖动滑块,看 3D 里的几何怎么动、右边读数怎么变。<br>读数公式与数值实时联动。</p>
+
+    <h2>视锥体参数</h2>
+    <div class="row"><span>近平面 n</span><input id="s-n" type="range" min="1" max="8" step="0.1"><b id="v-n"></b></div>
+    <div class="row"><span>远平面 f_far</span><input id="s-f" type="range" min="12" max="60" step="1"><b id="v-f"></b></div>
+    <div class="row"><span>fovY</span><input id="s-fov" type="range" min="20" max="110" step="1"><b id="v-fov"></b></div>
+
+    <h2>点 P 的位置</h2>
+    <div class="row"><span>深度 d</span><input id="s-d" type="range" step="0.1"><b id="v-d"></b></div>
+    <div class="row"><span>高度 y</span><input id="s-y" type="range" min="-7" max="7" step="0.1"><b id="v-y"></b></div>
+    <div class="row"><span>横向 x</span><input id="s-x" type="range" min="-12" max="12" step="0.1"><b id="v-x"></b></div>
+
+    <h2>读数(实时)</h2>
+    <div class="fx" id="fx-y"></div>
+    <div class="fx" id="fx-x"></div>
+    <div class="fx" id="fx-z"></div>
+    <p style="margin:8px 0 0"><span id="status" class="badge ok"></span></p>
+
+    <h2>深度值分配(这就是精度账)</h2>
+    <canvas id="curve" class="view"></canvas>
+    <p class="cap" id="cap-curve"></p>
+
+    <h2>投影后的屏幕位置</h2>
+    <div class="ndcWrap">
+      <canvas id="ndc" class="view"></canvas>
+      <p>点落在 NDC 方框里的位置就是它在屏幕上的位置。<br><br>|x| 或 |y| 超过 1 就出画面,硬件按 <b>−w ≤ x,y,z ≤ w</b> 直接裁掉。</p>
+    </div>
+
+    <h2>四个必试操作</h2>
+    <ol>
+      <li><b>只拖「近平面 n」</b> —— 近平面矩形在放大,p′ 也跟着变大,但上面的读数<b>一动不动</b>。这就是推导里 n 被约掉的那一步。</li>
+      <li><b>只拖「深度 d」</b> —— 点往远处跑,投影点向中心收缩,y_ndc 同步变小。近大远小。</li>
+      <li><b>只拖「fovY」</b> —— 锥体张合。读数跟着变,因为它只出现在 f = 1/tan(fovY/2) 里。</li>
+      <li><b>只拖「远平面 f_far」</b> —— 几何变了,但 z_ndc 几乎不动:深度值早已被近处吃光。</li>
+    </ol>
+    <p class="cap" style="margin-top:10px">视锥体宽高比固定 1.6,避免窗口尺寸影响对读数的解读。</p>
+  </aside>
+</div>
+
+<script type="module">
+/**
+ * M0 · 投影实验室 —— 把"投影矩阵"从公式变成可以拖的几何。
+ *
+ * 场景就是眼睛空间本身:相机(眼睛)画在原点,看向 -Z。
+ *   · 视锥体:近平面矩形 + 远平面矩形 + 4 条从眼睛射出的母线
+ *   · P(x, y, −d):一个可以拖动的点
+ *   · 过 P 的视线:与近平面的交点就是 p′,也就是 P 在屏幕上的位置
+ *   · z_ndc 曲线:深度值怎么被分配(近密远疏的量化证据)
+ *
+ * 渲染只用 engine.js 门面:线框 = 'line-list' + 恒等索引。
+ * 几何每帧在 CPU 重建(几十个顶点),用 engine.updateMesh 就地覆写显存。
+ *
+ * 必须经静态服务器打开(python -m http.server),file:// 下 ES Module 被 CORS 拦。
+ */
+import { createEngine, GLOBALS_WGSL, OBJECT_WGSL } from '../src/renderer/engine.js';
+import { OrbitCamera } from '../src/scene/camera.js';
+import { multiply, perspective } from '../src/math/mat4.js';
+
+const ASPECT = 1.6;      // 视锥体宽高比(固定值,见右侧说明)
+const FOV = 50 * Math.PI / 180;  // 观察这个场景的相机,与"被研究的 fovY"无关
+
+const canvas = document.getElementById('gpu');
+const engine = await createEngine(canvas, { clearColor: [0.97, 0.97, 0.965] });
+
+// ── 状态:所有滑块都写进这里,每帧读它重建几何 ──────────────────────
+const state = { n: 2, f: 40, fovDeg: 50, d: 12, x: 3, y: 5 };
+
+const tanHalf = () => Math.tan(state.fovDeg * Math.PI / 360);
+const yNdc = () => state.y / (state.d * tanHalf());
+const xNdc = () => state.x / (state.d * tanHalf() * ASPECT);
+/** z_ndc = f_far·(d − n) / (d·(f_far − n)),由 A、B 两个边界方程解出后整理而来 */
+const zNdcAt = (d) => state.f * (d - state.n) / (d * (state.f - state.n));
+
+// ── 管线:线框,一行声明 ─────────────────────────────────────────
+const pipeline = engine.pipeline({
+  shaderCode: /* wgsl */ `
+    ${GLOBALS_WGSL}
+    ${OBJECT_WGSL}
+    struct VSOut { @builtin(position) pos : vec4f };
+    @vertex
+    fn vs(@location(0) position : vec3f) -> VSOut {
+      var out : VSOut;
+      out.pos = globals.viewProj * vec4f(position, 1.0);
+      return out;
+    }
+    @fragment
+    fn fs() -> @location(0) vec4f { return object.data[0]; }
+  `,
+  topology: 'line-list',
+  attributes: ['positions'],
+  objectUniform: true,
+  depth: true,      // 线框之间也讲前后关系:被挡住的部分不该透出来
+});
+
+// ── 几何分组:一组 = 一个颜色 = 一次 draw(靠 key 各自持有 uniform)────
+// 每组线段数固定不变(engine.updateMesh 要求顶点数恒定),所以先声明再填。
+function createGroup(id, lineCount, color) {
+  const positions = new Float32Array(lineCount * 6);
+  const indices = new Uint32Array(lineCount * 2);   // 线框用恒等索引:第 i 个顶点就是第 i 个顶点
+  for (let i = 0; i < indices.length; i++) indices[i] = i;
+  return {
+    id, lineCount, positions, cursor: 0,
+    color: new Float32Array([...color, 1]),
+    mesh: engine.mesh({ positions, indices }),
+  };
+}
+const gFrustum = createGroup('frustum', 12, [0.216, 0.541, 0.867]);
+const gAxis    = createGroup('axis',     1, [0.61, 0.64, 0.70]);
+const gRay     = createGroup('ray',      3, [0.73, 0.46, 0.09]);
+const gMark    = createGroup('mark',     9, [0.847, 0.353, 0.188]);
+const gLevel   = createGroup('level',    1, [0.059, 0.431, 0.337]);
+const groups = [gFrustum, gAxis, gRay, gMark, gLevel];
+
+function line(g, a, b) {
+  const i = g.cursor++ * 6;
+  g.positions[i] = a[0];     g.positions[i + 1] = a[1]; g.positions[i + 2] = a[2];
+  g.positions[i + 3] = b[0]; g.positions[i + 4] = b[1]; g.positions[i + 5] = b[2];
+}
+function cross(g, c, s) {
+  line(g, [c[0] - s, c[1], c[2]], [c[0] + s, c[1], c[2]]);
+  line(g, [c[0], c[1] - s, c[2]], [c[0], c[1] + s, c[2]]);
+  line(g, [c[0], c[1], c[2] - s], [c[0], c[1], c[2] + s]);
+}
+
+/** 每帧按 state 重建全部线段。数量对不上立刻报错,防止静默画错。 */
+function buildScene() {
+  const { n, f, d, x, y } = state;
+  const hn = n * tanHalf(), hf = f * tanHalf();
+  for (const g of groups) g.cursor = 0;
+
+  // 视锥体:近平面矩形 + 远平面矩形 + 4 条母线(近平面角点自然落在母线上,因为 n/f 等比)
+  const near = [[-hn * ASPECT, hn, -n], [hn * ASPECT, hn, -n], [hn * ASPECT, -hn, -n], [-hn * ASPECT, -hn, -n]];
+  const far  = [[-hf * ASPECT, hf, -f], [hf * ASPECT, hf, -f], [hf * ASPECT, -hf, -f], [-hf * ASPECT, -hf, -f]];
+  for (let i = 0; i < 4; i++) line(gFrustum, near[i], near[(i + 1) % 4]);
+  for (let i = 0; i < 4; i++) line(gFrustum, far[i], far[(i + 1) % 4]);
+  for (let i = 0; i < 4; i++) line(gFrustum, [0, 0, 0], far[i]);
+
+  // 视线轴 + 眼睛标记
+  line(gAxis, [0, 0, 1.5], [0, 0, -f - 1]);
+  cross(gMark, [0, 0, 0], 0.035 * f);
+
+  // P、p′、过 P 的视线、以及 y 的垂足线
+  const P = [x, y, -d];
+  const p = [x * n / d, y * n / d, -n];        // 相似三角形:P·(n/d) 就是它在近平面上的位置
+  const Pe = [x * f / d, y * f / d, -f];       // 同一条视线延伸到远平面
+  line(gRay, [0, 0, 0], Pe);
+  line(gRay, P, [x, 0, -d]);                   // 垂足线:直观展示 y 是哪一段
+  line(gRay, [x * n / d, 0, -n], p);
+  cross(gMark, P, 0.035 * f);
+  cross(gMark, p, 0.035 * f);
+
+  // 等 NDC 线:近平面矩形上高度为 y_ndc 的那条横线。
+  // p′ 永远落在这条线上 —— 拖 n 时矩形和线一起放大,p′ 也跟着放大,
+  // 但"在矩形里的相对位置"不变,这正是读数恒定不变的几何解释。
+  const lv = yNdc() * hn;
+  line(gLevel, [-hn * ASPECT, lv, -n], [hn * ASPECT, lv, -n]);
+
+  for (const g of groups) {
+    if (g.cursor !== g.lineCount) {
+      throw new Error(`${g.id} 线段数不符:${g.cursor} ≠ ${g.lineCount}`);
+    }
+  }
+}
+
+// ── 观察用相机(看这个场景,不是被研究的那个相机)────────────────
+const labCamera = new OrbitCamera({
+  distance: 84, yaw: 0.95, pitch: 0.42,
+  target: [0, 0, -18], minDistance: 25, maxDistance: 320,
+});
+labCamera.attach(canvas);
+
+engine.frame(({ viewProj, aspect }) => {
+  labCamera.update();
+  viewProj.set(multiply(
+    perspective(FOV, aspect, 1, 800),
+    labCamera.viewMatrix()
+  ));
+
+  buildScene();
+  for (const g of groups) {
+    engine.updateMesh(g.mesh, { positions: g.positions });
+    engine.draw(pipeline, g.mesh, { uniform: g.color, key: g.id });
+  }
+});
+
+// ── UI 绑定 ─────────────────────────────────────────────────────
+const el = (id) => document.getElementById(id);
+const sliders = { n: el('s-n'), f: el('s-f'), fovDeg: el('s-fov'), d: el('s-d'), y: el('s-y'), x: el('s-x') };
+
+function syncSliderBounds() {
+  sliders.d.min = state.n;
+  sliders.d.max = state.f;
+  sliders.d.value = state.d;
+}
+
+function syncLabels() {
+  el('v-n').textContent = state.n.toFixed(1);
+  el('v-f').textContent = state.f.toFixed(0);
+  el('v-fov').textContent = state.fovDeg.toFixed(0) + '°';
+  el('v-d').textContent = state.d.toFixed(1);
+  el('v-y').textContent = state.y.toFixed(1);
+  el('v-x').textContent = state.x.toFixed(1);
+}
+
+function syncReadouts() {
+  const t = tanHalf();
+  el('fx-y').innerHTML =
+    `y_ndc = y / (d · tan(fovY/2))<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${state.y.toFixed(1)} / `
+    + `(${state.d.toFixed(1)} × ${t.toFixed(3)}) = <em>${yNdc().toFixed(3)}</em>`;
+  el('fx-x').innerHTML =
+    `x_ndc = x / (d · tan · 1.6)<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${state.x.toFixed(1)} / `
+    + `(${state.d.toFixed(1)} × ${t.toFixed(3)} × 1.6) = <em>${xNdc().toFixed(3)}</em>`;
+  el('fx-z').innerHTML =
+    `z_ndc = f_far·(d − n) / (d·(f_far − n))<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= `
+    + `${state.f.toFixed(0)}×${(state.d - state.n).toFixed(1)} / (${state.d.toFixed(1)}×`
+    + `${(state.f - state.n).toFixed(0)}) = <em>${zNdcAt(state.d).toFixed(3)}</em>`;
+
+  const inside = Math.abs(yNdc()) <= 1 && Math.abs(xNdc()) <= 1;
+  const badge = el('status');
+  badge.className = 'badge ' + (inside ? 'ok' : 'no');
+  badge.textContent = inside
+    ? `在画面内(占用深度区间 ${(zNdcAt(state.d) * 100).toFixed(1)}%)`
+    : `出画面 → 硬件按 −w ≤ x,y,z ≤ w 裁剪`;
+
+  el('cap-curve').textContent =
+    `阴影 = 到 P 为止已占用的深度区间。d = 2n = ${(2 * state.n).toFixed(1)} 时 `
+    + `z_ndc = ${zNdcAt(2 * state.n).toFixed(3)}(一半深度值给了最近的两个单位)。`;
+}
+
+// ── 2D 图表:深度映射曲线 ────────────────────────────────────────
+function fitCanvas(cv, w, h) {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  cv.style.width = w + 'px'; cv.style.height = h + 'px';
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return ctx;
+}
+const CW = 308, CH = 168;
+const curveCtx = fitCanvas(el('curve'), CW, CH);
+
+function drawCurve() {
+  const ctx = curveCtx, m = { l: 34, r: 10, t: 12, b: 24 };
+  const { n, f, d } = state;
+  ctx.clearRect(0, 0, CW, CH);
+
+  const lgN = Math.log(n), lgF = Math.log(f);
+  const X = (v) => m.l + (Math.log(v) - lgN) / (lgF - lgN) * (CW - m.l - m.r);
+  const Y = (z) => CH - m.b - z * (CH - m.b - m.t);
+
+  // 网格与刻度
+  ctx.strokeStyle = '#E8E8E4'; ctx.lineWidth = 1; ctx.font = '11px system-ui';
+  ctx.fillStyle = '#9CA3AF'; ctx.textAlign = 'right';
+  for (const z of [0, 0.5, 1]) {
+    ctx.beginPath(); ctx.moveTo(m.l, Y(z)); ctx.lineTo(CW - m.r, Y(z)); ctx.stroke();
+    ctx.fillText(z.toFixed(1), m.l - 5, Y(z) + 4);
+  }
+
+  // 已占用的深度区间:从 n 到当前 d
+  ctx.fillStyle = 'rgba(186, 117, 23, 0.14)';
+  ctx.fillRect(X(n), Y(1), Math.max(0, X(d) - X(n)), Y(0) - Y(1));
+
+  // 曲线本身(对数横轴采样,近处不丢形状)
+  ctx.beginPath();
+  for (let i = 0; i <= 160; i++) {
+    const v = n * Math.pow(f / n, i / 160);
+    const z = zNdcAt(v);
+    i === 0 ? ctx.moveTo(X(v), Y(z)) : ctx.lineTo(X(v), Y(z));
+  }
+  ctx.strokeStyle = '#185FA5'; ctx.lineWidth = 2; ctx.stroke();
+
+  // 横轴刻度
+  ctx.textAlign = 'center';
+  const ticks = [n, 2 * n, 5 * n, 10 * n, 20 * n, 50 * n].filter((v) => v < f * 0.98);
+  ticks.push(f);
+  for (const v of ticks) {
+    ctx.beginPath(); ctx.moveTo(X(v), CH - m.b); ctx.lineTo(X(v), CH - m.b + 4);
+    ctx.strokeStyle = '#D8DCE3'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#9CA3AF';
+    ctx.fillText(v >= 10 ? v.toFixed(0) : v.toFixed(1), X(v), CH - m.b + 15);
+  }
+  ctx.textAlign = 'left'; ctx.fillStyle = '#9CA3AF';
+  ctx.fillText('z_ndc', m.l - 30, m.t + 4);
+
+  // 当前 P 的落点
+  const zNow = zNdcAt(d);
+  ctx.beginPath(); ctx.setLineDash([3, 3]);
+  ctx.moveTo(X(d), Y(zNow)); ctx.lineTo(X(d), Y(0));
+  ctx.strokeStyle = '#0F6E56'; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+  ctx.beginPath(); ctx.arc(X(d), Y(zNow), 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#0F6E56'; ctx.fill();
+}
+
+// ── 2D 图表:NDC 屏幕 ───────────────────────────────────────────
+const NW = 140, NH = 140;
+const ndcCtx = fitCanvas(el('ndc'), NW, NH);
+
+function drawNdc() {
+  const ctx = ndcCtx, half = 58, cx = NW / 2, cy = NH / 2;
+  ctx.clearRect(0, 0, NW, NH);
+  ctx.strokeStyle = '#D8DCE3'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx, cy - half); ctx.lineTo(cx, cy + half);
+  ctx.moveTo(cx - half, cy); ctx.lineTo(cx + half, cy); ctx.stroke();
+  ctx.strokeRect(cx - half, cy - half, half * 2, half * 2);
+
+  const xv = xNdc(), yv = yNdc();
+  const px = cx + Math.max(-1.1, Math.min(1.1, xv)) * half;
+  const py = cy - Math.max(-1.1, Math.min(1.1, yv)) * half;
+  const inside = Math.abs(xv) <= 1 && Math.abs(yv) <= 1;
+  ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2);
+  ctx.fillStyle = inside ? '#0F6E56' : '#D85A30'; ctx.fill();
+  ctx.fillStyle = '#9CA3AF'; ctx.font = '11px system-ui'; ctx.textAlign = 'left';
+  ctx.fillText('−1', cx - half, cy + half + 13);
+  ctx.fillText('+1', cx + half - 10, cy + half + 13);
+}
+
+// ── 事件绑定 ────────────────────────────────────────────────────
+for (const [key, input] of Object.entries(sliders)) {
+  input.value = state[key];
+  input.addEventListener('input', () => {
+    state[key] = parseFloat(input.value);
+    if (state.d < state.n) state.d = state.n;
+    if (state.d > state.f) state.d = state.f;
+    syncSliderBounds();
+    syncLabels();
+    syncReadouts();
+    drawCurve();
+    drawNdc();
+  });
+}
+syncSliderBounds();
+syncLabels();
+syncReadouts();
+drawCurve();
+drawNdc();
+</script>
+</body>
+</html>

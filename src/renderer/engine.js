@@ -240,6 +240,26 @@ export async function createEngine(canvas, { clearColor = [0.043, 0.055, 0.078] 
     },
 
     /**
+     * 就地更新网格顶点数据(顶点数必须与首次上传一致)。
+     *
+     * 为什么需要它:实时变化的几何(投影实验台里的视锥体线框)每帧都在动。
+     * 教科书式做法是"数据变了就重建 buffer",但创建/销毁 buffer 是显式 GPU 操作,
+     * 每帧重建既慢又会触发浏览器告警。约定:场景的顶点拓扑在生命周期内固定,
+     * 改变的只是数值 —— 于是复用同一块显存,只重写内容。
+     */
+    updateMesh(mesh, geometry) {
+      for (const key of Object.keys(mesh.buffers)) {
+        const data = geometry[key];
+        if (!data) throw new Error(`updateMesh:几何缺少 ${key} 属性`);
+        if (data.byteLength !== mesh.buffers[key].size) {
+          throw new Error(`updateMesh:${key} 字节数变化(${mesh.buffers[key].size} → `
+            + `${data.byteLength})。顶点数必须恒定,请检查几何生成器`);
+        }
+        device.queue.writeBuffer(mesh.buffers[key], 0, data);
+      }
+    },
+
+    /**
      * 帧循环。回调里做两件事:更新相机/矩阵,调用 engine.draw()。
      * ctx 的字段都是"写进去就生效"的视图:viewProj.set(mvp) 直接写,
      * 引擎在回调结束后统一上传——回调代码里没有任何 GPU 概念。
