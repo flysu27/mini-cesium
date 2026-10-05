@@ -84,7 +84,9 @@ export async function createEngine(canvas, { clearColor = [0.043, 0.055, 0.078] 
     depthTexture = device.createTexture({
       size: [canvas.width, canvas.height],
       format: 'depth24plus',
-      usage: GPUBufferUsage.RENDER_ATTACHMENT,
+      // 注意:纹理用法在 GPUTextureUsage 里,与缓冲的 GPUBufferUsage 是两套枚举。
+      // 写成 GPUBufferUsage.RENDER_ATTACHMENT 会得到 undefined,报"Required member is undefined"。
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     return depthTexture;
   }
@@ -274,8 +276,10 @@ export async function createEngine(canvas, { clearColor = [0.043, 0.055, 0.078] 
 
         // DPR 自适应 resize(分屏拖动不触发 resize 事件,每帧兜底,成本是一次比较)
         const dpr = window.devicePixelRatio || 1;
-        const w = Math.floor(canvas.clientWidth * dpr);
-        const h = Math.floor(canvas.clientHeight * dpr);
+        // max(1, …):画布被隐藏或容器宽高为 0 时,size [0,0] 的纹理会直接报错。
+        // 这不是防御性代码,而是 0 尺寸画布在 DOM 里完全合法。
+        const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+        const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
         if (canvas.width !== w || canvas.height !== h) {
           canvas.width = w;
           canvas.height = h;

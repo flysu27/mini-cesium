@@ -51,7 +51,7 @@ MVP 判据(一条命令可验证):打开一个 HTML,3 秒内看到贴着真实�
 | 功能 | 必要性 | 验收标准 |
 |---|---|---|
 | WebGPU 初始化(adapter → device → context.configure) | 必须 | 画布按 DPR 自适应,缩放窗口不变形 |
-| 数学库:Vec3、Mat4(Quat 推迟到 flyTo 所在里程碑) | 必须 | 17 项单元测试全绿:`npm test` |
+| 数学库:Vec3、Mat4(Quat 推迟到 flyTo 所在里程碑) | 必须 | 21 项测试全绿:`npm test` |
 | WGSL 着色器模块与渲染管线封装 | 必须 | 编译错误可读;uniform 布局与列主序矩阵零转换对齐 |
 | 引擎门面 engine.js(属性/uniform 约定表、惰性建资源、逐物体 uniform 槽) | 必须 | demo 内不含任何原始 WebGPU 配置对象 |
 | 几何生成:球面网格参数化(位置/法线/索引) | 必须 | 渲染出一个线框球 |
