@@ -61,6 +61,8 @@
     <div class="row"><span>近平面 n</span><input id="s-n" type="range" min="1" max="8" step="0.1"><b id="v-n"></b></div>
     <div class="row"><span>远平面 f_far</span><input id="s-f" type="range" min="12" max="60" step="1"><b id="v-f"></b></div>
     <div class="row"><span>fovY</span><input id="s-fov" type="range" min="20" max="110" step="1"><b id="v-fov"></b></div>
+    <div class="row"><span>宽高比 aspect</span><input id="s-aspect" type="range" min="0.5" max="2.6" step="0.05"><b id="v-aspect"></b></div>
+    <p class="cap" style="margin:2px 0 0">aspect = 宽 / 高。它只出现在 x 的公式里——y 和 z 完全不知道它的存在。</p>
 
     <h2>点 P 的位置</h2>
     <div class="row"><span>深度 d</span><input id="s-d" type="range" step="0.1"><b id="v-d"></b></div>
@@ -83,14 +85,15 @@
       <p>点落在 NDC 方框里的位置就是它在屏幕上的位置。<br><br>|x| 或 |y| 超过 1 就出画面,硬件按 <b>−w ≤ x,y,z ≤ w</b> 直接裁掉。</p>
     </div>
 
-    <h2>四个必试操作</h2>
+    <h2>五个必试操作</h2>
     <ol>
       <li><b>只拖「近平面 n」</b> —— 近平面矩形在放大,p′ 也跟着变大,但上面的读数<b>一动不动</b>。这就是推导里 n 被约掉的那一步。</li>
       <li><b>只拖「深度 d」</b> —— 点往远处跑,投影点向中心收缩,y_ndc 同步变小。近大远小。</li>
       <li><b>只拖「fovY」</b> —— 锥体张合。读数跟着变,因为它只出现在 f = 1/tan(fovY/2) 里。</li>
       <li><b>只拖「远平面 f_far」</b> —— 几何变了,但 z_ndc 几乎不动:深度值早已被近处吃光。</li>
+      <li><b>只拖「宽高比 aspect」</b> —— 矩形只横向变宽,<b>y_ndc 和 z_ndc 一位都不动</b>,只有 x_ndc 变。所以窄画布会把画面左右切掉,而不会把上下切掉——这就是手机竖屏玩横版游戏时发生的事。</li>
     </ol>
-    <p class="cap" style="margin-top:10px">视锥体宽高比固定 1.6,避免窗口尺寸影响对读数的解读。</p>
+    <p class="cap" style="margin-top:10px">aspect 是参数不是常数:它等于画布的 宽/高,窗口一变形它就变。这里做成滑块,是为了让你亲手看到"它只影响 x"。</p>
   </aside>
 </div>
 
@@ -113,18 +116,21 @@ import { createEngine, GLOBALS_WGSL, OBJECT_WGSL } from '../src/renderer/engine.
 import { OrbitCamera } from '../src/scene/camera.js';
 import { multiply, perspective } from '../src/math/mat4.js';
 
-const ASPECT = 1.6;      // 视锥体宽高比(固定值,见右侧说明)
 const FOV = 50 * Math.PI / 180;  // 观察这个场景的相机,与"被研究的 fovY"无关
 
 const canvas = document.getElementById('gpu');
 const engine = await createEngine(canvas, { clearColor: [0.97, 0.97, 0.965] });
 
 // ── 状态:所有滑块都写进这里,每帧读它重建几何 ──────────────────────
-const state = { n: 2, f: 40, fovDeg: 50, d: 12, x: 3, y: 5 };
+// aspect = 视锥体/视口的宽高比 width/height,出现在 x 的公式里(见 xNdc)。
+// 最初这里是硬编码的 1.6 —— 那是把一个"参数"伪装成了"常数"。现在它是个可拖的量,
+// 因为"改宽高比会发生什么"本身就是要教的:y_ndc / z_ndc 纹丝不动,只有 x_ndc 变。
+const state = { n: 2, f: 40, fovDeg: 50, d: 12, x: 3, y: 5, aspect: 1.6 };
 
 const tanHalf = () => Math.tan(state.fovDeg * Math.PI / 360);
 const yNdc = () => state.y / (state.d * tanHalf());
-const xNdc = () => state.x / (state.d * tanHalf() * ASPECT);
+/** x_ndc = x / (d · tan(fovY/2) · aspect)。aspect 只出现在这里,不进 y、不进 z。 */
+const xNdc = () => state.x / (state.d * tanHalf() * state.aspect);
 /** z_ndc = f_far·(d − n) / (d·(f_far − n)),由 A、B 两个边界方程解出后整理而来 */
 const zNdcAt = (d) => state.f * (d - state.n) / (d * (state.f - state.n));
 
@@ -181,13 +187,14 @@ function cross(g, c, s) {
 
 /** 每帧按 state 重建全部线段。数量对不上立刻报错,防止静默画错。 */
 function buildScene() {
-  const { n, f, d, x, y } = state;
+  const { n, f, d, x, y, aspect } = state;
   const hn = n * tanHalf(), hf = f * tanHalf();
   for (const g of groups) g.cursor = 0;
 
   // 视锥体:近平面矩形 + 远平面矩形 + 4 条母线(近平面角点自然落在母线上,因为 n/f 等比)
-  const near = [[-hn * ASPECT, hn, -n], [hn * ASPECT, hn, -n], [hn * ASPECT, -hn, -n], [-hn * ASPECT, -hn, -n]];
-  const far  = [[-hf * ASPECT, hf, -f], [hf * ASPECT, hf, -f], [hf * ASPECT, -hf, -f], [-hf * ASPECT, -hf, -f]];
+  // 矩形半宽 = 半高 · aspect:aspect 就是"截面横着比竖着宽多少倍"。
+  const near = [[-hn * aspect, hn, -n], [hn * aspect, hn, -n], [hn * aspect, -hn, -n], [-hn * aspect, -hn, -n]];
+  const far  = [[-hf * aspect, hf, -f], [hf * aspect, hf, -f], [hf * aspect, -hf, -f], [-hf * aspect, -hf, -f]];
   for (let i = 0; i < 4; i++) line(gFrustum, near[i], near[(i + 1) % 4]);
   for (let i = 0; i < 4; i++) line(gFrustum, far[i], far[(i + 1) % 4]);
   for (let i = 0; i < 4; i++) line(gFrustum, [0, 0, 0], far[i]);
@@ -210,7 +217,7 @@ function buildScene() {
   // p′ 永远落在这条线上 —— 拖 n 时矩形和线一起放大,p′ 也跟着放大,
   // 但"在矩形里的相对位置"不变,这正是读数恒定不变的几何解释。
   const lv = yNdc() * hn;
-  line(gLevel, [-hn * ASPECT, lv, -n], [hn * ASPECT, lv, -n]);
+  line(gLevel, [-hn * aspect, lv, -n], [hn * aspect, lv, -n]);
 
   for (const g of groups) {
     if (g.cursor !== g.lineCount) {
@@ -242,7 +249,7 @@ engine.frame(({ viewProj, aspect }) => {
 
 // ── UI 绑定 ─────────────────────────────────────────────────────
 const el = (id) => document.getElementById(id);
-const sliders = { n: el('s-n'), f: el('s-f'), fovDeg: el('s-fov'), d: el('s-d'), y: el('s-y'), x: el('s-x') };
+const sliders = { n: el('s-n'), f: el('s-f'), fovDeg: el('s-fov'), aspect: el('s-aspect'), d: el('s-d'), y: el('s-y'), x: el('s-x') };
 
 function syncSliderBounds() {
   sliders.d.min = state.n;
@@ -254,6 +261,7 @@ function syncLabels() {
   el('v-n').textContent = state.n.toFixed(1);
   el('v-f').textContent = state.f.toFixed(0);
   el('v-fov').textContent = state.fovDeg.toFixed(0) + '°';
+  el('v-aspect').textContent = state.aspect.toFixed(2);
   el('v-d').textContent = state.d.toFixed(1);
   el('v-y').textContent = state.y.toFixed(1);
   el('v-x').textContent = state.x.toFixed(1);
@@ -264,9 +272,12 @@ function syncReadouts() {
   el('fx-y').innerHTML =
     `y_ndc = y / (d · tan(fovY/2))<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${state.y.toFixed(1)} / `
     + `(${state.d.toFixed(1)} × ${t.toFixed(3)}) = <em>${yNdc().toFixed(3)}</em>`;
+  // 不写 1.6 这个数字,写它是谁:aspect = 宽/高,由视口决定,不是常数
   el('fx-x').innerHTML =
-    `x_ndc = x / (d · tan · 1.6)<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${state.x.toFixed(1)} / `
-    + `(${state.d.toFixed(1)} × ${t.toFixed(3)} × 1.6) = <em>${xNdc().toFixed(3)}</em>`;
+    `x_ndc = x / (d · tan(fovY/2) · aspect)<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${state.x.toFixed(1)} / `
+    + `(${state.d.toFixed(1)} × ${t.toFixed(3)} × ${state.aspect.toFixed(2)}) `
+    + `= <em>${xNdc().toFixed(3)}</em><br>`
+    + `<span style="color:var(--t2)">aspect = 宽/高 = ${state.aspect.toFixed(2)}(拖动它会变)</span>`;
   el('fx-z').innerHTML =
     `z_ndc = f_far·(d − n) / (d·(f_far − n))<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= `
     + `${state.f.toFixed(0)}×${(state.d - state.n).toFixed(1)} / (${state.d.toFixed(1)}×`

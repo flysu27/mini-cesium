@@ -51,7 +51,7 @@ MVP 判据(一条命令可验证):打开一个 HTML,3 秒内看到贴着真实�
 | 功能 | 必要性 | 验收标准 |
 |---|---|---|
 | WebGPU 初始化(adapter → device → context.configure) | 必须 | 画布按 DPR 自适应,缩放窗口不变形 |
-| 数学库:Vec3、Mat4(Quat 推迟到 flyTo 所在里程碑) | 必须 | 21 项测试全绿:`npm test` |
+| 数学库:Vec3、Mat4(Quat 推迟到 flyTo 所在里程碑) | 必须 | 27 项测试全绿:`npm test` |
 | WGSL 着色器模块与渲染管线封装 | 必须 | 编译错误可读;uniform 布局与列主序矩阵零转换对齐 |
 | 引擎门面 engine.js(属性/uniform 约定表、惰性建资源、逐物体 uniform 槽) | 必须 | demo 内不含任何原始 WebGPU 配置对象 |
 | 几何生成:球面网格参数化(位置/法线/索引) | 必须 | 渲染出一个线框球 |
@@ -62,7 +62,9 @@ MVP 判据(一条命令可验证):打开一个 HTML,3 秒内看到贴着真实�
 
 验收 demo:`demo/m0-wireframe-globe.html`(经静态服务器打开)。
 
-教学 demo:`demo/m0-projection-lab.html` —— 可交互 3D 投影实验台。拖 n / f_far / fovY / d,x,y,实时看视锥体几何与读数联动,并附深度值分配曲线与 NDC 屏幕视图。用于 E1 讲"投影矩阵为什么长这样"。
+教学 demo:`demo/m0-projection-lab.html` —— 可交互 3D 投影实验台。拖 n / f_far / fovY / aspect / d,x,y,实时看视锥体几何与读数联动,并附深度值分配曲线与 NDC 屏幕视图。用于 E1 讲"投影矩阵为什么长这样"。
+
+> **闭式公式必须与矩阵逐点相等。** 文档与实验台用闭式公式(便于教学),引擎用矩阵(便于 GPU),两者一旦不一致,教学就是错的。`test/projection.test.js` 穷举 7168 组参数交叉验证,并钉住五条教学不变量:n 被约掉、aspect 只进 x、截面对角线 → NDC 对角线、z_ndc 边界与单调性、w_clip = −z_view。
 
 ### M1 第一个地球
 
