@@ -13,6 +13,11 @@
   #gpu:active { cursor: grabbing; }
   #hint { position: absolute; left: 14px; top: 12px; color: var(--t2); font-size: 12px;
           background: rgba(255,255,255,.72); padding: 4px 8px; border-radius: 6px; user-select: none; }
+  /* WebGPU 不可用时的提示。3D 视图关掉,但右侧那堆 2D 面板全是 Canvas2D,
+     与 GPU 无关,应当照常工作 —— 所以这句话要写在 3D 区域正中间,说清楚。 */
+  #hint.fail { left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 76%;
+               text-align: center; line-height: 1.7; color: #993C1D; background: #FDF0EA;
+               border: 1px solid #F0C4B4; padding: 14px 18px; font-size: 13px; user-select: text; }
   #legend { position: absolute; left: 14px; bottom: 12px; display: flex; flex-wrap: wrap;
             gap: 8px 14px; max-width: 60%;
             font-size: 12px; color: var(--t2); background: rgba(255,255,255,.72);
@@ -91,13 +96,18 @@
     <canvas id="curve" class="view"></canvas>
     <p class="cap" id="cap-curve"></p>
 
+    <h2>深度值到底分给了谁(为什么近处占一大半)</h2>
+    <canvas id="budget" class="view"></canvas>
+    <div class="fx" id="fx-budget"></div>
+    <p class="cap" id="cap-budget"></p>
+
     <h2>投影后的屏幕位置</h2>
     <div class="ndcWrap">
       <canvas id="ndc" class="view"></canvas>
       <p>点落在 NDC 方框里的位置就是它在屏幕上的位置。<br><br>|x| 或 |y| 超过 1 就出画面,硬件按 <b>−w ≤ x,y,z ≤ w</b> 直接裁掉。</p>
     </div>
 
-    <h2>七个必试操作</h2>
+    <h2>八个必试操作</h2>
     <ol>
       <li><b>只拖「近平面 n」</b> —— 近平面矩形在放大,p′ 也跟着变大,但上面的读数<b>一动不动</b>。这就是推导里 n 被约掉的那一步。</li>
       <li><b>只拖「深度 d」</b> —— 点往远处跑,投影点向中心收缩,y_ndc 同步变小。近大远小。</li>
@@ -106,6 +116,7 @@
       <li><b>只拖「宽高比 aspect」</b> —— 矩形只横向变宽,<b>y_ndc 和 z_ndc 一位都不动</b>,只有 x_ndc 变。所以窄画布会把画面左右切掉,而不会把上下切掉——这就是手机竖屏玩横版游戏时发生的事。</li>
       <li><b>只拖「深度 d」,盯着两块颜色看</b> —— 大三角形跟着 P 走,小三角形钉在近平面上一起缩放,<b>小的那个永远套在大的里面</b>,比例就是 n/d。这就是"相似"的全部内容。</li>
       <li><b>只拖「近平面 n」</b> —— 小三角形跟着长大(它的一条腿长度就是 n),但<b>两块颜色的边界比值 n/d 变了,读数却不变</b>。把两条放在一起看:几何在变、读数不变,这才是 n 被约掉的真正含义。</li>
+      <li><b>盯住「深度值到底分给了谁」那张图,只拖「远平面 f_far」</b> —— 上面那条橙线的百分比几乎不动(默认 52.6%,f 拉大后逼近 <b>50%</b>),下面那条越来越短。<b>远平面拉多远都改变不了"最近的一倍视距独占一半以上"</b>。这不是配置问题,是投影矩阵 A、B 两个系数解出来的必然。</li>
     </ol>
     <p class="cap" style="margin-top:10px">还有一件渲染不出来、只能靠数学说的事:<b>从眼睛 E 本身看,这两个三角形完全重合</b>(P 与 p′ 落在屏幕的同一个像素上)。这不是巧合,这就是"投影"的定义,也是为什么 y_ndc 只取决于比值 y/d。测试文件里有对应的断言钉着它。</p>
     <p class="cap" style="margin-top:10px">aspect 是参数不是常数:它等于画布的 宽/高,窗口一变形它就变。这里做成滑块,是为了让你亲手看到"它只影响 x"。</p>
@@ -139,7 +150,22 @@ import { multiply, perspective } from '../src/math/mat4.js';
 const FOV = 50 * Math.PI / 180;  // 观察这个场景的相机,与"被研究的 fovY"无关
 
 const canvas = document.getElementById('gpu');
-const engine = await createEngine(canvas, { clearColor: [0.97, 0.97, 0.965] });
+
+// WebGPU 初始化是全页面唯一可能"环境不满足"的地方。它失败不该让右侧那一堆
+// 2D 面板一起陪葬 —— 那些面板全是 Canvas2D,和 GPU 毫无关系。
+// 所以单独兜住:失败时只在 3D 区域给一句能读懂的说明,其余照常工作。
+// (这也是"只适配最新 WebGPU、不写回退路径"的正确姿势:不回退,但要报错报清楚。)
+let engine = null;
+try {
+  engine = await createEngine(canvas, { clearColor: [0.97, 0.97, 0.965] });
+} catch (err) {
+  const hint = document.getElementById('hint');
+  hint.className = 'fail';
+  hint.innerHTML = 'WebGPU 不可用,3D 视图已关闭。'
+    + '<br>右侧所有面板不受影响,照常可用(它们不需要 GPU)。'
+    + `<br><br><span style="opacity:.72">${String(err && err.message || err)}</span>`;
+  console.warn('[projection-lab] WebGPU 初始化失败:', err);
+}
 
 // ── 状态:所有滑块都写进这里,每帧读它重建几何 ──────────────────────
 // aspect = 视锥体/视口的宽高比 width/height,出现在 x 的公式里(见 xNdc)。
@@ -155,7 +181,9 @@ const xNdc = () => state.x / (state.d * tanHalf() * state.aspect);
 const zNdcAt = (d) => state.f * (d - state.n) / (d * (state.f - state.n));
 
 // ── 管线:线框,一行声明 ─────────────────────────────────────────
-const pipeline = engine.pipeline({
+// engine && ... :engine 为 null(WebGPU 不可用)时整个表达式短路成 null,
+// 后面的 2D 面板初始化得以继续 —— 面板全是 Canvas2D,不该为 GPU 陪葬。
+const pipeline = engine && engine.pipeline({
   shaderCode: /* wgsl */ `
     ${GLOBALS_WGSL}
     ${OBJECT_WGSL}
@@ -186,7 +214,7 @@ const pipeline = engine.pipeline({
 //   depthWrite: false —— 半透明的面不该挡住它后面的几何
 //   depthBias: true   —— 面与自己的轮廓线严格共面,不推一下会闪(Z-fighting)
 //   blend: true       —— 颜色 uniform 的第 4 位就是 alpha
-const fillPipeline = engine.pipeline({
+const fillPipeline = engine && engine.pipeline({
   shaderCode: /* wgsl */ `
     ${GLOBALS_WGSL}
     ${OBJECT_WGSL}
@@ -216,7 +244,7 @@ function createFace(id, color, alpha) {
     positions: new Float32Array(9),
     indices: new Uint32Array([0, 1, 2]),
     color: new Float32Array([...color, alpha]),
-    mesh: engine.mesh({ positions: new Float32Array(9), indices: new Uint32Array([0, 1, 2]) }),
+    mesh: engine && engine.mesh({ positions: new Float32Array(9), indices: new Uint32Array([0, 1, 2]) }),
   };
 }
 function setFace(f, a, b, c) {
@@ -238,7 +266,7 @@ function createGroup(id, lineCount, color) {
   return {
     id, lineCount, positions, cursor: 0,
     color: new Float32Array([...color, 1]),
-    mesh: engine.mesh({ positions, indices }),
+    mesh: engine && engine.mesh({ positions, indices }),
   };
 }
 const gFrustum = createGroup('frustum', 12, [0.216, 0.541, 0.867]);
@@ -327,7 +355,8 @@ const labCamera = new OrbitCamera({
 });
 labCamera.attach(canvas);
 
-engine.frame(({ viewProj, aspect }) => {
+// 没有 engine 就整个跳过渲染循环 —— 但下面 2D 面板的初始化与事件绑定照旧执行。
+if (engine) engine.frame(({ viewProj, aspect }) => {
   labCamera.update();
   viewProj.set(multiply(
     perspective(FOV, aspect, 1, 800),
@@ -422,6 +451,40 @@ function syncReadouts() {
       : `阴影 = 到 P 为止已占用的深度区间。d = 2n = ${(2 * n).toFixed(1)} 时 `
         + `z_ndc = ${zNdcAt(2 * n).toFixed(3)}(一半深度值给了最近的两个单位)。`)
     + (reciprocalAxis() ? '' : ' 勾上面的开关换 1/d 横轴。');
+
+  // ── 深度值分给了谁 ──
+  // 参照位移取「d: n → 2n」。它有三个好处:一眼能想象、与 f_far 基本无关、
+  // 而且极限是干净的 50%(见下面的 cap)。
+  const unit = 2 * n - n;                       // 参照位移长度,正好等于 n
+  const zRef = zNdcAt(2 * n);
+  const restUnits = f - 2 * n;
+  if (restUnits > 0) {
+    el('fx-budget').innerHTML =
+      `参照位移:<b>d 从 ${n.toFixed(1)} 走到 ${(2 * n).toFixed(1)}</b>`
+      + ` —— 只移动了 ${unit.toFixed(1)} 个单位(最近的一倍视距)<br>`
+      + `&nbsp;&nbsp;在<b>深度值</b>轴上占 <em>${(zRef * 100).toFixed(1)}%</em><br>`
+      + `&nbsp;&nbsp;在<b>真实距离</b>轴上只占 <em>${(unit / (f - n) * 100).toFixed(1)}%</em>`
+      + `<br>剩下 <b>${restUnits.toFixed(1)} 个单位</b>(d: ${(2 * n).toFixed(1)} → ${f.toFixed(0)})`
+      + ` 才分到 ${((1 - zRef) * 100).toFixed(1)}% 的深度值。`;
+  } else {
+    // 2n 已经越过远平面,这个参照位移整个落在视锥外面,显示它没有意义
+    el('fx-budget').innerHTML =
+      `<span style="color:var(--t2)">当前 2n = ${(2 * n).toFixed(1)} 已经越过远平面 `
+      + `f_far = ${f.toFixed(1)},"最近的一倍视距"整个落在视锥外。`
+      + `把 f_far 拖大、或把 n 拖小,这个对照才会出现。</span>`;
+  }
+
+  el('cap-budget').innerHTML =
+    `<b>为什么近处能占一大半?</b>因为深度值量的不是"有多远",而是`
+    + `<b>物体在屏幕上看起来占多大</b>。屏幕是一把均匀的尺子,而透视把远处压缩了`
+    + `(屏幕高度 ∝ 1/d)。要让远处的物体也在屏幕上有位置,就只能用更大的真实距离`
+    + `去换同样一格深度值 —— 于是 z_ndc ∝ 1/d,在 <b>1/d</b> 上均分,而不是在 d 上均分。`
+    + `<br><br>而且不许商量:光栅化按屏幕像素均匀扫描,三角形内部每个像素的深度靠`
+    + `<b>屏幕空间线性插值</b>得到。在屏幕空间线性的是 <b>1/d</b>,不是 d ——`
+    + `而 z_ndc = A + B/d 恰好是 1/d 的仿射函数。所以"对 1/d 线性"是唯一能让插值结果`
+    + `等于真实深度的形式,被硬件约束锁死,不是设计者挑的。`
+    + `<br><br>极限很干净:把 f_far 拖到很大,z_ndc(2n) → <b>50%</b>。`
+    + `也就是说<b>最近的一倍视距,无论远平面设多远,永远拿走至少一半的深度值</b>。`;
 }
 
 // ── 2D 图表:深度映射曲线 ────────────────────────────────────────
@@ -578,6 +641,101 @@ function drawCurve() {
   ctx.fillStyle = '#0F6E56'; ctx.fill();
 }
 
+// ── 2D 图表:深度值到底分给了谁 ───────────────────────────────────
+// 专治一个几乎人人都会卡住的疑问:
+//   「最近处只走了 2 个单位的距离,凭什么能吃掉一半多的深度值?」
+//
+// 这张图把 [n, f] 这同一个区间用两种量法各量一遍,上下对齐摆在一起:
+//   上条 —— 按**深度值**均分(10 格一样宽);
+//   下条 —— 按**真实距离**均分(每格的宽度就是它覆盖的 Δd)。
+// 再把同一段位移「d: n → 2n」在两条上各画一条橙线。
+// 它在上条占一半多,在下条只占一小截 —— 这就是那个反直觉的地方。
+//
+// 为什么?因为深度值量的不是"有多远",而是"在屏幕上看起来占多大"。
+// 屏幕是一把均匀的尺子,而透视把远处压缩了(屏幕高度 ∝ 1/d),
+// 所以要让远处也在屏幕上有位置,就得用更大的真实距离去换同样一格深度值。
+// 数学上就一句话:z_ndc 对 1/d 线性,不对 d 线性 —— 它在 1/d 上均分。
+const BW = 308, BH = 104;
+const budgetCtx = fitCanvas(el('budget'), BW, BH);
+
+/** z_ndc → d 的反函数:把 z = (1/n − 1/d)/(1/n − 1/f) 解出 1/d 再取倒数。
+ *    1/d = 1/n − z·(1/n − 1/f) */
+const dAtZ = (z) => {
+  const { n, f } = state;
+  return 1 / (1 / n - z * (1 / n - 1 / f));
+};
+
+/** 10 段配色:近处深蓝、远处浅蓝。上下两条同一段同色,才对得上。 */
+const segColor = (k) => `hsl(215 58% ${36 + k * 3.9}%)`;
+
+function drawBudget() {
+  const ctx = budgetCtx;
+  const { n, f } = state;
+  const x0 = 10, w = BW - 20, hBar = 20;
+  const yA = 18, yB = 62;
+  ctx.clearRect(0, 0, BW, BH);
+  ctx.font = '10.5px system-ui';
+
+  // ── 上:深度值被均分为 10 份 ──
+  const segW = w / 10;
+  for (let k = 0; k < 10; k++) {
+    ctx.fillStyle = segColor(k);
+    ctx.fillRect(x0 + k * segW, yA, segW - 0.6, hBar);
+  }
+  ctx.strokeStyle = '#C3CAD4'; ctx.lineWidth = 1;
+  ctx.strokeRect(x0 + 0.5, yA + 0.5, w - 1, hBar - 1);
+  ctx.fillStyle = '#6B7280'; ctx.textAlign = 'left';
+  ctx.fillText('深度值 z_ndc —— 均分 10 份,每份一样大', x0, yA - 6);
+
+  // ── 下:这 10 份各自覆盖多远的真实距离 ──
+  // 宽度严格按 Δd 的真实比例,不做任何压缩 —— "前几格细成一条线"本身就是结论。
+  // 只保证 0.9px 的最小可见宽度,免得边界糊掉。
+  const posB = (dv) => x0 + (dv - n) / (f - n) * w;
+  for (let k = 0; k < 10; k++) {
+    const bx = posB(dAtZ(k / 10));
+    const bw = Math.max(0.9, posB(dAtZ((k + 1) / 10)) - bx - 0.6);
+    ctx.fillStyle = segColor(k);
+    ctx.fillRect(bx, yB, bw, hBar);
+  }
+  ctx.strokeStyle = '#C3CAD4';
+  ctx.strokeRect(x0 + 0.5, yB + 0.5, w - 1, hBar - 1);
+  ctx.fillStyle = '#6B7280';
+  ctx.fillText('它们覆盖的真实距离 d —— 同样 10 份,长度差一百多倍', x0, yB - 6);
+
+  // ── 主角:同一段位移,在两个轴上各占多少 ──
+  // d: n → 2n 当参照最干净 —— "最近的一倍视距",谁都能凭空想象它有多长。
+  // 与 fx-budget 用同一个判据(2n < f),免得出现"图不画线但文字却在讲"的不一致
+  if (2 * n < f) {
+    const zRef = zNdcAt(2 * n);
+    const xa = x0 + zRef * w;
+    const xb = posB(2 * n);
+    ctx.setLineDash([3, 2]); ctx.strokeStyle = '#D85A30'; ctx.lineWidth = 1.4;
+    for (const [x, y] of [[xa, yA], [xb, yB]]) {
+      ctx.beginPath(); ctx.moveTo(x, y - 2); ctx.lineTo(x, y + hBar + 2); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // 线压在色块上,所以文字先描一圈白边再上色,否则读不出来
+    ctx.lineWidth = 3; ctx.strokeStyle = '#fff';
+    ctx.fillStyle = '#D85A30';
+    const labels = [
+      [`${(zRef * 100).toFixed(1)}% 的深度值`, xa, yA + 14],
+      [`${((2 * n - n) / (f - n) * 100).toFixed(1)}% 的距离`, xb, yB + 14],
+    ];
+    for (const [txt, x, y] of labels) {
+      ctx.textAlign = 'left';
+      let tx = x + 5;
+      if (tx + ctx.measureText(txt).width > x0 + w) { ctx.textAlign = 'right'; tx = x - 5; }
+      ctx.strokeText(txt, tx, y);
+      ctx.fillText(txt, tx, y);
+    }
+  }
+
+  // ── 距离轴两端的锚点 ──
+  ctx.fillStyle = '#9CA3AF'; ctx.font = '10px system-ui';
+  ctx.textAlign = 'left';  ctx.fillText(`n = ${n.toFixed(1)}`, x0, yB + hBar + 13);
+  ctx.textAlign = 'right'; ctx.fillText(`f_far = ${f.toFixed(0)}`, x0 + w, yB + hBar + 13);
+}
+
 // ── 2D 图表:NDC 屏幕 ───────────────────────────────────────────
 const NW = 140, NH = 140;
 const ndcCtx = fitCanvas(el('ndc'), NW, NH);
@@ -609,6 +767,7 @@ function refreshAll() {
   syncReadouts();
   drawSim();
   drawCurve();
+  drawBudget();
   drawNdc();
 }
 
