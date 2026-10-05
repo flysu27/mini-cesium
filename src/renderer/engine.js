@@ -104,11 +104,16 @@ export async function createEngine(canvas, { clearColor = [0.043, 0.055, 0.078] 
      * @param {string[]} [opts.attributes] 着色器消费哪些顶点属性,默认 ['positions']
      * @param {boolean}  [opts.objectUniform] 着色器引入了 OBJECT_WGSL(binding 1)时为 true
      * @param {boolean}  [opts.depth]      需要深度测试(M1 起的实体渲染)时为 true
+     * @param {boolean}  [opts.depthWrite=true] 深度测试通过时是否写深度。半透明的面设 false
+     * @param {boolean}  [opts.depthBias]  共面时把自己往后推一点(面 + 轮廓线的标准组合)
+     * @param {boolean}  [opts.blend]      半透明混合(alpha 覆盖)。颜色 uniform 的第 4 位当 alpha
      */
     pipeline({ shaderCode, topology = 'triangle-list', attributes = ['positions'],
-      objectUniform = false, depth = false }) {
+      objectUniform = false, depth = false, depthWrite = true, depthBias = false,
+      blend = false }) {
       if (depth) useDepth = true;
-      return { shaderCode, topology, attributes, objectUniform, depth, _res: new Map() };
+      return { shaderCode, topology, attributes, objectUniform, depth,
+        depthWrite, depthBias, blend, _res: new Map() };
     },
 
     /** 上传网格。attributes 约定表之外的几何字段直接忽略——每多传一字节都是显存。 */
@@ -191,12 +196,29 @@ export async function createEngine(canvas, { clearColor = [0.043, 0.055, 0.078] 
           vertex: { module, entryPoint: 'vs', buffers },
           fragment: {
             module, entryPoint: 'fs',
-            targets: [{ format }], // 必须与画布格式一致,否则 validate 报错
+            // 必须与画布格式一致,否则 validate 报错。
+            // blend:标准的 alpha 覆盖 —— out = src·srcA + dst·(1−srcA)。
+            // 只要一个布尔,不用手写 BlendComponent 那一坨;需要别的混合模式时再加枚举。
+            targets: [pipeline.blend
+              ? {
+                format,
+                blend: {
+                  color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                  alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                },
+              }
+              : { format }],
           },
           primitive: { topology: pipeline.topology, cullMode: 'none' },
           ...(pipeline.depth && {
             depthStencil: {
-              format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less',
+              format: 'depth24plus',
+              depthWriteEnabled: pipeline.depthWrite,
+              depthCompare: 'less',
+              // polygon offset。一个面和它自己的轮廓线严格共面,插值深度会互相咬
+              // (Z-fighting),表现为轮廓线闪烁。把面整体往后推一点点,线就永远赢。
+              // 这是"面 + 描边"组合的标准做法,depthWrite(false) 时尤其需要。
+              ...(pipeline.depthBias && { depthBias: 60, depthBiasSlopeScale: 2 }),
             },
           }),
         });

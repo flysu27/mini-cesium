@@ -13,7 +13,8 @@
   #gpu:active { cursor: grabbing; }
   #hint { position: absolute; left: 14px; top: 12px; color: var(--t2); font-size: 12px;
           background: rgba(255,255,255,.72); padding: 4px 8px; border-radius: 6px; user-select: none; }
-  #legend { position: absolute; left: 14px; bottom: 12px; display: flex; gap: 14px;
+  #legend { position: absolute; left: 14px; bottom: 12px; display: flex; flex-wrap: wrap;
+            gap: 8px 14px; max-width: 60%;
             font-size: 12px; color: var(--t2); background: rgba(255,255,255,.72);
             padding: 5px 10px; border-radius: 6px; user-select: none; }
   #legend i { display: inline-block; width: 14px; height: 2px; margin-right: 5px; vertical-align: middle; }
@@ -39,6 +40,9 @@
   ol b { color: var(--t1); font-weight: 500; }
   .ndcWrap { display: flex; gap: 14px; align-items: flex-start; }
   .ndcWrap p { margin: 4px 0 0; color: var(--t2); font-size: 12px; }
+  .chk { display: flex; align-items: center; gap: 6px; margin: 2px 0 6px;
+         color: var(--t2); font-size: 12px; cursor: pointer; user-select: none; }
+  .chk input { accent-color: var(--accent); margin: 0; }
 </style>
 </head>
 <body>
@@ -48,7 +52,9 @@
     <div id="hint">拖拽旋转视角 · 滚轮缩放 · 右侧滑块改参数</div>
     <div id="legend">
       <span><i style="background:#378ADD"></i>视锥体</span>
-      <span><i style="background:#BA7517"></i>P 与视线</span>
+      <span><i style="background:#BA7517"></i>共用斜边(过 P 的视线)</span>
+      <span><i style="background:#7C3AED"></i>相似三角形的边</span>
+      <span><i style="background:#8B5CF6"></i>两个三角形填的面(嵌套)</span>
       <span><i style="background:#0F6E56"></i>p′ / 等 NDC 线</span>
     </div>
   </div>
@@ -75,7 +81,13 @@
     <div class="fx" id="fx-z"></div>
     <p style="margin:8px 0 0"><span id="status" class="badge ok"></span></p>
 
+    <h2>相似三角形(投影的骨架)</h2>
+    <canvas id="sim" class="view"></canvas>
+    <div class="fx" id="fx-sim"></div>
+    <p class="cap" id="cap-sim"></p>
+
     <h2>深度值分配(这就是精度账)</h2>
+    <label class="chk"><input id="c-recip" type="checkbox"> 横轴换成 1/d —— 曲线会变成一条直线</label>
     <canvas id="curve" class="view"></canvas>
     <p class="cap" id="cap-curve"></p>
 
@@ -85,14 +97,17 @@
       <p>点落在 NDC 方框里的位置就是它在屏幕上的位置。<br><br>|x| 或 |y| 超过 1 就出画面,硬件按 <b>−w ≤ x,y,z ≤ w</b> 直接裁掉。</p>
     </div>
 
-    <h2>五个必试操作</h2>
+    <h2>七个必试操作</h2>
     <ol>
       <li><b>只拖「近平面 n」</b> —— 近平面矩形在放大,p′ 也跟着变大,但上面的读数<b>一动不动</b>。这就是推导里 n 被约掉的那一步。</li>
       <li><b>只拖「深度 d」</b> —— 点往远处跑,投影点向中心收缩,y_ndc 同步变小。近大远小。</li>
       <li><b>只拖「fovY」</b> —— 锥体张合。读数跟着变,因为它只出现在 f = 1/tan(fovY/2) 里。</li>
       <li><b>只拖「远平面 f_far」</b> —— 几何变了,但 z_ndc 几乎不动:深度值早已被近处吃光。</li>
       <li><b>只拖「宽高比 aspect」</b> —— 矩形只横向变宽,<b>y_ndc 和 z_ndc 一位都不动</b>,只有 x_ndc 变。所以窄画布会把画面左右切掉,而不会把上下切掉——这就是手机竖屏玩横版游戏时发生的事。</li>
+      <li><b>只拖「深度 d」,盯着两块颜色看</b> —— 大三角形跟着 P 走,小三角形钉在近平面上一起缩放,<b>小的那个永远套在大的里面</b>,比例就是 n/d。这就是"相似"的全部内容。</li>
+      <li><b>只拖「近平面 n」</b> —— 小三角形跟着长大(它的一条腿长度就是 n),但<b>两块颜色的边界比值 n/d 变了,读数却不变</b>。把两条放在一起看:几何在变、读数不变,这才是 n 被约掉的真正含义。</li>
     </ol>
+    <p class="cap" style="margin-top:10px">还有一件渲染不出来、只能靠数学说的事:<b>从眼睛 E 本身看,这两个三角形完全重合</b>(P 与 p′ 落在屏幕的同一个像素上)。这不是巧合,这就是"投影"的定义,也是为什么 y_ndc 只取决于比值 y/d。测试文件里有对应的断言钉着它。</p>
     <p class="cap" style="margin-top:10px">aspect 是参数不是常数:它等于画布的 宽/高,窗口一变形它就变。这里做成滑块,是为了让你亲手看到"它只影响 x"。</p>
   </aside>
 </div>
@@ -105,7 +120,12 @@
  *   · 视锥体:近平面矩形 + 远平面矩形 + 4 条从眼睛射出的母线
  *   · P(x, y, −d):一个可以拖动的点
  *   · 过 P 的视线:与近平面的交点就是 p′,也就是 P 在屏幕上的位置
+ *   · 相似三角形:大三角(到 P)与小三角(到近平面)共用斜边,只画两条腿
  *   · z_ndc 曲线:深度值怎么被分配(近密远疏的量化证据)
+ *
+ * 三套读数各有一条"本质":
+ *   x_ndc、y_ndc —— 相似三角形。本质是"两条坡度之比",斜率来自同一眼点。
+ *   z_ndc        —— 不是三角形。它是 1/d 的线性插值,这才是 Z-fighting 的根。
  *
  * 渲染只用 engine.js 门面:线框 = 'line-list' + 恒等索引。
  * 几何每帧在 CPU 重建(几十个顶点),用 engine.updateMesh 就地覆写显存。
@@ -155,6 +175,60 @@ const pipeline = engine.pipeline({
   depth: true,      // 线框之间也讲前后关系:被挡住的部分不该透出来
 });
 
+// ── 填充面:把两个相似三角形"涂上"两个颜色 ─────────────────────
+// 为什么只画线看不出两个三角形、涂成面就看得出:
+//   两个三角形共用斜边(同一条过眼的射线),所以轮廓线并起来只是
+//   "一条射线 + 两条长度不同的腿",分不出谁是谁。
+//   而它们是**以 E 为中心的位似**(缩比 n/d),小的那个严格的套在大的里面 ——
+//   一旦填成半透明的面,嵌套关系立刻可见,两个颜色同时看到。
+//
+// 三个新参数各解决一个具体问题:
+//   depthWrite: false —— 半透明的面不该挡住它后面的几何
+//   depthBias: true   —— 面与自己的轮廓线严格共面,不推一下会闪(Z-fighting)
+//   blend: true       —— 颜色 uniform 的第 4 位就是 alpha
+const fillPipeline = engine.pipeline({
+  shaderCode: /* wgsl */ `
+    ${GLOBALS_WGSL}
+    ${OBJECT_WGSL}
+    struct VSOut { @builtin(position) pos : vec4f };
+    @vertex
+    fn vs(@location(0) position : vec3f) -> VSOut {
+      var out : VSOut;
+      out.pos = globals.viewProj * vec4f(position, 1.0);
+      return out;
+    }
+    @fragment
+    fn fs() -> @location(0) vec4f { return object.data[0]; }
+  `,
+  topology: 'triangle-list',
+  attributes: ['positions'],
+  objectUniform: true,
+  depth: true,
+  depthWrite: false,
+  depthBias: true,
+  blend: true,
+});
+
+/** 一个三角形 = 3 个顶点 + 恒等索引(0,1,2)。顶点数恒定,可用 updateMesh 复用显存。 */
+function createFace(id, color, alpha) {
+  return {
+    id,
+    positions: new Float32Array(9),
+    indices: new Uint32Array([0, 1, 2]),
+    color: new Float32Array([...color, alpha]),
+    mesh: engine.mesh({ positions: new Float32Array(9), indices: new Uint32Array([0, 1, 2]) }),
+  };
+}
+function setFace(f, a, b, c) {
+  const p = f.positions;
+  p[0] = a[0]; p[1] = a[1]; p[2] = a[2];
+  p[3] = b[0]; p[4] = b[1]; p[5] = b[2];
+  p[6] = c[0]; p[7] = c[1]; p[8] = c[2];
+}
+const faceBig   = createFace('faceBig',   [0.486, 0.227, 0.929], 0.14);
+const faceSmall = createFace('faceSmall', [0.545, 0.361, 0.965], 0.44);
+const faces = [faceBig, faceSmall];
+
 // ── 几何分组:一组 = 一个颜色 = 一次 draw(靠 key 各自持有 uniform)────
 // 每组线段数固定不变(engine.updateMesh 要求顶点数恒定),所以先声明再填。
 function createGroup(id, lineCount, color) {
@@ -169,10 +243,12 @@ function createGroup(id, lineCount, color) {
 }
 const gFrustum = createGroup('frustum', 12, [0.216, 0.541, 0.867]);
 const gAxis    = createGroup('axis',     1, [0.61, 0.64, 0.70]);
-const gRay     = createGroup('ray',      3, [0.73, 0.46, 0.09]);
+const gRay     = createGroup('ray',      1, [0.73, 0.46, 0.09]);
+const gLeg     = createGroup('leg',      3, [0.486, 0.227, 0.929]);
+const gFoot    = createGroup('foot',     6, [0.655, 0.545, 0.980]);
 const gMark    = createGroup('mark',     9, [0.847, 0.353, 0.188]);
 const gLevel   = createGroup('level',    1, [0.059, 0.431, 0.337]);
-const groups = [gFrustum, gAxis, gRay, gMark, gLevel];
+const groups = [gFrustum, gAxis, gRay, gLeg, gFoot, gMark, gLevel];
 
 function line(g, a, b) {
   const i = g.cursor++ * 6;
@@ -203,13 +279,31 @@ function buildScene() {
   line(gAxis, [0, 0, 1.5], [0, 0, -f - 1]);
   cross(gMark, [0, 0, 0], 0.035 * f);
 
-  // P、p′、过 P 的视线、以及 y 的垂足线
-  const P = [x, y, -d];
-  const p = [x * n / d, y * n / d, -n];        // 相似三角形:P·(n/d) 就是它在近平面上的位置
-  const Pe = [x * f / d, y * f / d, -f];       // 同一条视线延伸到远平面
-  line(gRay, [0, 0, 0], Pe);
-  line(gRay, P, [x, 0, -d]);                   // 垂足线:直观展示 y 是哪一段
-  line(gRay, [x * n / d, 0, -n], p);
+  // ── 相似三角形:投影的骨架 ──────────────────────────────────────
+  // 大三角形:E(眼睛) → Fb(x,0,−d) → P(x,y,−d),直角在 Fb
+  // 小三角形:E(眼睛) → Fs(x·n/d,0,−n) → p′(x·n/d, y·n/d, −n),直角在 Fs
+  //
+  // 关键:Fb 与 Fs 落在同一条射线上(Fs = Fb·(n/d)),p′ = P·(n/d)),
+  // 所以小三角形是大三角形以 E 为中心的 n/d 位似 —— 两个三角形**共用斜边**。
+  //   只画线:并起来只是"一条射线 + 两条腿",分不出谁是谁。
+  //   填成面(下面 faces):嵌套关系一目了然,两个颜色同时可见。
+  // 还有一件事只在数学上成立、渲染上做不到:从眼睛 E 本身看,两者
+  // **完全重合**(见 test/projection.test.js 的对应断言)—— 这就是投影的定义。
+  const P  = [x, y, -d];
+  const p  = [x * n / d, y * n / d, -n];       // 相似三角形:p′ = P·(n/d)
+  const Pe = [x * f / d, y * f / d, -f];       // 同一条斜边延伸到远平面
+  const Fb = [x, 0, -d];                       // 大三角形的垂足
+  const Fs = [x * n / d, 0, -n];               // 小三角形的垂足(在近平面上)
+
+  setFace(faceBig, [0, 0, 0], Fb, P);          // 填面:大三角形
+  setFace(faceSmall, [0, 0, 0], Fs, p);        // 填面:小三角形(套在里面)
+
+  line(gRay, [0, 0, 0], Pe);                   // 共用斜边
+  line(gLeg, [0, 0, 0], Fb);                   // 大三角形沿 z 的长腿(长度 √(x²+d²))
+  line(gLeg, Fb, P);                           // 大三角形竖直腿(长度 y)
+  line(gLeg, Fs, p);                           // 小三角形竖直腿(长度 y·n/d)
+  cross(gFoot, Fb, 0.02 * f);                  // 两个垂足:直角在这里
+  cross(gFoot, Fs, 0.02 * f);
   cross(gMark, P, 0.035 * f);
   cross(gMark, p, 0.035 * f);
 
@@ -245,6 +339,12 @@ engine.frame(({ viewProj, aspect }) => {
     engine.updateMesh(g.mesh, { positions: g.positions });
     engine.draw(pipeline, g.mesh, { uniform: g.color, key: g.id });
   }
+  // 面放在所有线之后:半透明 + depthWrite(false),所以它只负责"染一下",
+  // 不会挡住任何东西;与它共面的轮廓线靠 depthBias 保证仍然压在上面。
+  for (const f of faces) {
+    engine.updateMesh(f.mesh, { positions: f.positions });
+    engine.draw(fillPipeline, f.mesh, { uniform: f.color, key: f.id });
+  }
 });
 
 // ── UI 绑定 ─────────────────────────────────────────────────────
@@ -269,30 +369,59 @@ function syncLabels() {
 
 function syncReadouts() {
   const t = tanHalf();
+  const { n, f, d, x, y, aspect } = state;
+
+  // x、y:两条坡度之比。写法改成"坡度 ÷ 锥边坡度",因为那才是几何里面发生的事。
+  const slopeY = y / d, edgeY = t;
+  const slopeX = x / d, edgeX = t * aspect;
   el('fx-y').innerHTML =
-    `y_ndc = y / (d · tan(fovY/2))<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${state.y.toFixed(1)} / `
-    + `(${state.d.toFixed(1)} × ${t.toFixed(3)}) = <em>${yNdc().toFixed(3)}</em>`;
+    `y_ndc = (y / d) ÷ tan(fovY/2)<br>&nbsp;&nbsp;= ${slopeY.toFixed(4)} ÷ ${edgeY.toFixed(4)}`
+    + ` = <em>${yNdc().toFixed(3)}</em><br>`
+    + `<span style="color:var(--t2)">只取决于比值 y/d,与 d、y 各自多大无关</span>`;
   // 不写 1.6 这个数字,写它是谁:aspect = 宽/高,由视口决定,不是常数
   el('fx-x').innerHTML =
-    `x_ndc = x / (d · tan(fovY/2) · aspect)<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= ${state.x.toFixed(1)} / `
-    + `(${state.d.toFixed(1)} × ${t.toFixed(3)} × ${state.aspect.toFixed(2)}) `
-    + `= <em>${xNdc().toFixed(3)}</em><br>`
-    + `<span style="color:var(--t2)">aspect = 宽/高 = ${state.aspect.toFixed(2)}(拖动它会变)</span>`;
+    `x_ndc = (x / d) ÷ (tan(fovY/2) · aspect)<br>&nbsp;&nbsp;= ${slopeX.toFixed(4)} ÷ `
+    + `(${edgeY.toFixed(4)} × ${aspect.toFixed(2)}) = ${slopeX.toFixed(4)} ÷ ${edgeX.toFixed(4)}`
+    + ` = <em>${xNdc().toFixed(3)}</em><br>`
+    + `<span style="color:var(--t2)">同一件事,只是锥边横向被 aspect 拉宽了</span>`;
+
+  // z:不是三角形,是 1/d 的线性插值。两种写法并排,自己看哪一个更"本质"。
+  const inv = (v) => 1 / v;
   el('fx-z').innerHTML =
-    `z_ndc = f_far·(d − n) / (d·(f_far − n))<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= `
-    + `${state.f.toFixed(0)}×${(state.d - state.n).toFixed(1)} / (${state.d.toFixed(1)}×`
-    + `${(state.f - state.n).toFixed(0)}) = <em>${zNdcAt(state.d).toFixed(3)}</em>`;
+    `z_ndc = f_far·(d − n) / (d·(f_far − n)) = <em>${zNdcAt(d).toFixed(3)}</em><br>`
+    + `<span style="color:var(--t2)">等价写法(推荐记这个):<br>`
+    + `&nbsp;&nbsp;z_ndc = (1/n − 1/d) / (1/n − 1/f_far)<br>`
+    + `&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= (${inv(n).toFixed(4)} − ${inv(d).toFixed(4)}) / `
+    + `(${inv(n).toFixed(4)} − ${inv(f).toFixed(4)}) = ${((inv(n) - inv(d)) / (inv(n) - inv(f))).toFixed(3)}<br>`
+    + `&nbsp;&nbsp;对 1/d 是线性的 —— 深度不是"按距离"均分的,是"按 1/距离"均分的。<br>`
+    + `&nbsp;&nbsp;这里没有三角形,这也是 z_ndc 与 x_ndc/y_ndc 最大的不同。</span>`;
 
   const inside = Math.abs(yNdc()) <= 1 && Math.abs(xNdc()) <= 1;
   const badge = el('status');
   badge.className = 'badge ' + (inside ? 'ok' : 'no');
   badge.textContent = inside
-    ? `在画面内(占用深度区间 ${(zNdcAt(state.d) * 100).toFixed(1)}%)`
+    ? `在画面内(占用深度区间 ${(zNdcAt(d) * 100).toFixed(1)}%)`
     : `出画面 → 硬件按 −w ≤ x,y,z ≤ w 裁剪`;
 
+  // 相似三角形面板的文字:两条腿的比值必须相同,这就是"相似"
+  const ratio = n / d;
+  el('fx-sim').innerHTML =
+    `大三角形(d = ${d.toFixed(1)}):竖直腿 y = ${y.toFixed(1)},水平腿 = ${d.toFixed(1)}<br>`
+    + `小三角形(n = ${n.toFixed(1)}):竖直腿 y·n/d = ${(y * ratio).toFixed(2)},`
+    + `水平腿 = ${n.toFixed(1)}<br>`
+    + `缩比 n/d = <em>${ratio.toFixed(4)}</em>,两条腿同时缩这么多 → 形状不变。`;
+
+  el('cap-sim').textContent =
+    `两个三角形是以眼睛 E 为中心的严格位似(缩比 n/d = ${ratio.toFixed(3)}):`
+    + `小三角形的每一条边都等于大三角形的 ${ratio.toFixed(3)} 倍,所以它稳稳地套在里面。`
+    + `3D 视图里那两块嵌套的颜色就是这两个面 —— 光靠线看不出嵌套(斜边共用),填成面就一目了然。`;
+
   el('cap-curve').textContent =
-    `阴影 = 到 P 为止已占用的深度区间。d = 2n = ${(2 * state.n).toFixed(1)} 时 `
-    + `z_ndc = ${zNdcAt(2 * state.n).toFixed(3)}(一半深度值给了最近的两个单位)。`;
+    (reciprocalAxis()
+      ? `横轴 = 1/d(等距刻度)→ 曲线变成一条直线:z_ndc 对 1/d 是线性的。`
+      : `阴影 = 到 P 为止已占用的深度区间。d = 2n = ${(2 * n).toFixed(1)} 时 `
+        + `z_ndc = ${zNdcAt(2 * n).toFixed(3)}(一半深度值给了最近的两个单位)。`)
+    + (reciprocalAxis() ? '' : ' 勾上面的开关换 1/d 横轴。');
 }
 
 // ── 2D 图表:深度映射曲线 ────────────────────────────────────────
@@ -307,13 +436,98 @@ function fitCanvas(cv, w, h) {
 const CW = 308, CH = 168;
 const curveCtx = fitCanvas(el('curve'), CW, CH);
 
+/** 横轴用 1/d 吗(勾选框控制)。用函数包一层,免得每次读 DOM。 */
+const reciprocalAxis = () => el('c-recip').checked;
+
+// ── 2D 图表:相似三角形(嵌套位似) ────────────────────────────────
+// 为什么要在 2D 里另画一张:因为 3D 里两个三角形共用斜边,压根分不出"两个"。
+// 这里把它们画成以眼睛 E 为中心的嵌套位似 —— 大三角形里套着 n/d 倍的小三角形,
+// 纵横用同一比例(等比),所以画出来的形状是真的,角度也是真的。
+const SW = 308, SH = 142;
+const simCtx = fitCanvas(el('sim'), SW, SH);
+
+function drawSim() {
+  const ctx = simCtx, m = { l: 30, r: 82, t: 14, b: 26 };
+  const { n, d, y } = state;
+  ctx.clearRect(0, 0, SW, SH);
+
+  const plotW = SW - m.l - m.r, plotH = SH - m.t - m.b;
+  const yAbs = Math.max(Math.abs(y), 1e-6);
+  const sgn = y >= 0 ? 1 : -1;
+  // 等比缩放:横竖同一个 s,形状才不会被拉歪
+  const s = Math.min(plotW / d, (plotH / 2) / yAbs);
+  const x0 = m.l + (plotW - d * s) / 2;        // 横向居中
+  const y0 = m.t + plotH / 2;                  // 基线(眼睛的高度)
+  const px = (depth) => x0 + depth * s;
+  const py = (v) => y0 - sgn * v * s;
+
+  const E = [px(0), y0];
+  const drawTri = (dep, leg, stroke, fill) => {
+    const bx = px(dep), by = py(leg);
+    ctx.beginPath();
+    ctx.moveTo(E[0], E[1]);
+    ctx.lineTo(bx, y0);
+    ctx.lineTo(bx, by);
+    ctx.closePath();
+    ctx.fillStyle = fill; ctx.fill();
+    ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
+    // 直角标记:两条腿在垂足处的小方块
+    const t2 = Math.min(7, Math.abs(by - y0) * 0.5, (dep * s) * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(bx - t2, y0); ctx.lineTo(bx - t2, by + sgn * t2); ctx.lineTo(bx, by + sgn * t2);
+    ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke();
+  };
+
+  // 大三角形(到 P 所在的深度 d)—— 顺序无所谓,小的后画会盖在大的上面
+  drawTri(d, y, '#7C3AED', 'rgba(124,58,237,0.055)');
+  // 小三角形(到近平面 n)
+  drawTri(n, y * n / d, '#8B5CF6', 'rgba(139,92,246,0.22)');
+
+  // 眼睛标记
+  ctx.beginPath(); ctx.arc(E[0], E[1], 3, 0, Math.PI * 2);
+  ctx.fillStyle = '#1F2937'; ctx.fill();
+  ctx.font = '11px system-ui'; ctx.fillStyle = '#6B7280'; ctx.textAlign = 'right';
+  ctx.fillText('E', E[0] - 6, E[1] + 4);
+
+  // 共用斜边(两个三角形的斜边是同一条线)
+  ctx.beginPath();
+  ctx.moveTo(E[0], E[1]); ctx.lineTo(px(d), py(y));
+  ctx.setLineDash([4, 3]); ctx.strokeStyle = '#BA7517'; ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 尺寸标注:左边一列给大三角形,右边一列给小三角形。
+  // 右侧两行要防重叠(当 n/d 接近 1 时两者几乎同高)。
+  ctx.font = '11px system-ui';
+  const right = SW - m.r + 6;
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#7C3AED';
+  ctx.fillText(`y = ${y.toFixed(2)}`, right, py(y) + 4);
+  ctx.fillText(`d = ${d.toFixed(1)}`, right, py(y) + 18);
+  ctx.fillStyle = '#8B5CF6';
+  const ySmallPix = py(y * n / d);
+  const sep = Math.abs(ySmallPix - py(y)) < 26 ? 18 : 4;
+  ctx.fillText(`y·n/d = ${(y * n / d).toFixed(2)}`, right, ySmallPix + 4 + sep);
+  ctx.fillText(`n = ${n.toFixed(1)}`, right, ySmallPix + 18 + sep);
+
+  // 共享的顶角:两个三角形在这一点的角度相同 —— "相似"最直接的证据
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#9CA3AF';
+  const deg = Math.atan2(yAbs, d) * 180 / Math.PI;
+  ctx.fillText(`顶角相同 θ = ${deg.toFixed(1)}°`, SW - m.r - 40, SH - 7);
+}
+
 function drawCurve() {
   const ctx = curveCtx, m = { l: 34, r: 10, t: 12, b: 24 };
   const { n, f, d } = state;
   ctx.clearRect(0, 0, CW, CH);
 
   const lgN = Math.log(n), lgF = Math.log(f);
-  const X = (v) => m.l + (Math.log(v) - lgN) / (lgF - lgN) * (CW - m.l - m.r);
+  // 两种横轴。对数轴把近处拉开看得清形状;1/d 轴则是那个"真相"的证明:
+  //   z_ndc 对 1/d 线性 → 在 1/d 等距刻度下,曲线是一条直线。
+  const reciproc = reciprocalAxis();
+  const X = reciproc
+    ? (v) => m.l + (1 / n - 1 / v) / (1 / n - 1 / f) * (CW - m.l - m.r)
+    : (v) => m.l + (Math.log(v) - lgN) / (lgF - lgN) * (CW - m.l - m.r);
   const Y = (z) => CH - m.b - z * (CH - m.b - m.t);
 
   // 网格与刻度
@@ -337,10 +551,11 @@ function drawCurve() {
   }
   ctx.strokeStyle = '#185FA5'; ctx.lineWidth = 2; ctx.stroke();
 
-  // 横轴刻度
+  // 横轴刻度。1/d 轴用"等距的 1/d"取刻点 —— 那些 d 标签会自己挤到一起,这就是结论。
   ctx.textAlign = 'center';
-  const ticks = [n, 2 * n, 5 * n, 10 * n, 20 * n, 50 * n].filter((v) => v < f * 0.98);
-  ticks.push(f);
+  const ticks = reciproc
+    ? [0, 1, 2, 3, 4].map((i) => 1 / (1 / n + (i * (1 / f - 1 / n)) / 4))
+    : [n, 2 * n, 5 * n, 10 * n, 20 * n, 50 * n].filter((v) => v < f * 0.98).concat([f]);
   for (const v of ticks) {
     ctx.beginPath(); ctx.moveTo(X(v), CH - m.b); ctx.lineTo(X(v), CH - m.b + 4);
     ctx.strokeStyle = '#D8DCE3'; ctx.lineWidth = 1; ctx.stroke();
@@ -349,6 +564,10 @@ function drawCurve() {
   }
   ctx.textAlign = 'left'; ctx.fillStyle = '#9CA3AF';
   ctx.fillText('z_ndc', m.l - 30, m.t + 4);
+  if (reciproc) {
+    ctx.textAlign = 'right'; ctx.fillStyle = '#185FA5';
+    ctx.fillText('横轴 = 1/d(等距)→ 直线', CW - m.r, m.t + 4);
+  }
 
   // 当前 P 的落点
   const zNow = zNdcAt(d);
@@ -383,24 +602,30 @@ function drawNdc() {
 }
 
 // ── 事件绑定 ────────────────────────────────────────────────────
+/** 一处刷新所有联动视图,避免漏掉某个面板 */
+function refreshAll() {
+  syncSliderBounds();
+  syncLabels();
+  syncReadouts();
+  drawSim();
+  drawCurve();
+  drawNdc();
+}
+
 for (const [key, input] of Object.entries(sliders)) {
   input.value = state[key];
   input.addEventListener('input', () => {
     state[key] = parseFloat(input.value);
     if (state.d < state.n) state.d = state.n;
     if (state.d > state.f) state.d = state.f;
-    syncSliderBounds();
-    syncLabels();
-    syncReadouts();
-    drawCurve();
-    drawNdc();
+    refreshAll();
   });
 }
-syncSliderBounds();
-syncLabels();
-syncReadouts();
-drawCurve();
-drawNdc();
+
+// 1/d 横轴开关:换轴时要重画曲线,也要更新说明文字
+el('c-recip').addEventListener('change', refreshAll);
+
+refreshAll();
 </script>
 </body>
 </html>

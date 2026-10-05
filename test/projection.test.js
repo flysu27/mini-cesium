@@ -129,6 +129,55 @@ test('不变量 4:z_ndc 的两个边界与单调性(WebGPU: z ∈ [0,1])', () =>
   }
 });
 
+test('不变量 6:从眼睛 E 看,两个相似三角形在屏幕上完全重合', () => {
+  // 实验台里画了两个三角形:
+  //   大:E(0,0,0) – Fb(x,0,−d) – P(x,y,−d)
+  //   小:E(0,0,0) – Fs(x·n/d,0,−n) – p′(x·n/d, y·n/d, −n)
+  // 它们是以 E 为中心的 n/d 位似。**从 E 本身看,两者投影到同一个屏幕三角形**——
+  // 这是"投影"的定义,也是 y_ndc 只依赖比值 y/d(而非 d、y 各自大小)的根源。
+  // 这条在渲染上是画不出来的(相机不能放在三角形顶点上),只能靠断言钉住。
+  const n = 2, fFar = 40, aspect = 1.6, d = 12, x = 3, y = 5;
+  const m = perspective(50 * Math.PI / 180, aspect, n, fFar);
+  const k = n / d;
+
+  // P 与 p′:同一条射线上的两点 → 屏幕坐标必须一致
+  const sp = transformPoint(m, { x, y, z: -d });
+  const sq = transformPoint(m, { x: x * k, y: y * k, z: -n });
+  assert.ok(Math.abs(sp.x - sq.x) < 1e-6, `P.x=${sp.x} vs p′.x=${sq.x}`);
+  assert.ok(Math.abs(sp.y - sq.y) < 1e-6, `P.y=${sp.y} vs p′.y=${sq.y}`);
+  // 但深度值不同 —— 深度是屏幕上唯一还能区分它们的量(E6 讲 Z-fighting 的起点)
+  assert.ok(sp.z > sq.z, '远处的点深度值应更大(WebGPU z 越大越远)');
+
+  // 垂足 Fb 与 Fs:同样重合
+  const sf = transformPoint(m, { x, y: 0, z: -d });
+  const sg = transformPoint(m, { x: x * k, y: 0, z: -n });
+  assert.ok(Math.abs(sf.x - sg.x) < 1e-6 && Math.abs(sf.y - sg.y) < 1e-6,
+    '两个垂足在屏幕上未重合');
+
+  // 夹角也相同:两条腿除以各自深度,得到同一个角 —— "顶角相同"的证明
+  const slopeBig = y / d, slopeSmall = (y * k) / n;
+  assert.ok(Math.abs(slopeBig - slopeSmall) < 1e-12, '两个三角形的顶角不相等');
+});
+
+test('不变量 7:小三角形是大三角形以 E 为中心的 n/d 位似', () => {
+  const n = 2, d = 12, x = 3, y = 5, k = n / d;
+  // 三个顶点逐一验证:小 = 大 × (n/d)
+  const big = [[0, 0, 0], [x, 0, -d], [x, y, -d]];
+  const small = [[0, 0, 0], [x * k, 0, -n], [x * k, y * k, -n]];
+  for (let i = 0; i < 3; i++) {
+    for (let c = 0; c < 3; c++) {
+      assert.ok(Math.abs(small[i][c] - big[i][c] * k) < 1e-12,
+        `顶点 ${i} 分量 ${c} 不是位似关系`);
+    }
+  }
+  // 位似 ⇒ 相似 ⇒ 三边长度全部成 k 倍
+  const len = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) {
+    assert.ok(Math.abs(len(small[i], small[j]) - len(big[i], big[j]) * k) < 1e-12,
+      `边 ${i}-${j} 未按 k 缩放`);
+  }
+});
+
 test('不变量 5:w_clip = -z_view(相机背后的点 w 为负)', () => {
   // 这不是"能算出来"的问题,而是"M2 拾取必须先检查 w 符号"的原因:
   // 相机看向 -Z,所以前方点的 z_view < 0 → w = -z_view > 0;
