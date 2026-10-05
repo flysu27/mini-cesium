@@ -35,6 +35,16 @@
   .fx { background: #F7F7F5; border-radius: 8px; padding: 9px 11px; margin: 6px 0;
         font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.75; }
   .fx em { font-style: normal; color: var(--accent); }
+  /* 矩阵展开的逐行演算。用 monospace + pre 让等号能对齐 —— 对齐本身就是
+     教学信息:上下两段的数字必须一模一样,只差最后那个除法。 */
+  .trace { background: #F7F7F5; border-radius: 8px; padding: 9px 11px; margin: 6px 0;
+           font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
+           line-height: 1.7; white-space: pre; overflow-x: auto; color: var(--t1); }
+  .trace .k { color: var(--t2); }                     /* 阶段标签 */
+  .trace .mm { color: #8B5CF6; }                      /* 矩阵系数 */
+  .trace .den { color: #0F6E56; font-weight: 600; }   /* 分母 / w */
+  .trace .num { color: var(--accent); }               /* 结果 */
+  .trace .dim { color: var(--t3); }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
   .ok { background: #E1F5EE; color: #085041; }
   .no { background: #FCEBEB; color: #A32D2D; }
@@ -86,6 +96,11 @@
     <div class="fx" id="fx-z"></div>
     <p style="margin:8px 0 0"><span id="status" class="badge ok"></span></p>
 
+    <h2>矩阵吐出来的是 clip,不是 NDC</h2>
+    <p class="cap" style="margin:2px 0 6px">上面那些闭式公式,和矩阵之间只差一步<b>除以 w</b>。下面用当前的真实数字走一遍。</p>
+    <div class="trace" id="fx-trace"></div>
+    <p class="cap" id="cap-trace"></p>
+
     <h2>相似三角形(投影的骨架)</h2>
     <canvas id="sim" class="view"></canvas>
     <div class="fx" id="fx-sim"></div>
@@ -107,7 +122,7 @@
       <p>点落在 NDC 方框里的位置就是它在屏幕上的位置。<br><br>|x| 或 |y| 超过 1 就出画面,硬件按 <b>−w ≤ x,y,z ≤ w</b> 直接裁掉。</p>
     </div>
 
-    <h2>八个必试操作</h2>
+    <h2>九个必试操作</h2>
     <ol>
       <li><b>只拖「近平面 n」</b> —— 近平面矩形在放大,p′ 也跟着变大,但上面的读数<b>一动不动</b>。这就是推导里 n 被约掉的那一步。</li>
       <li><b>只拖「深度 d」</b> —— 点往远处跑,投影点向中心收缩,y_ndc 同步变小。近大远小。</li>
@@ -117,6 +132,7 @@
       <li><b>只拖「深度 d」,盯着两块颜色看</b> —— 大三角形跟着 P 走,小三角形钉在近平面上一起缩放,<b>小的那个永远套在大的里面</b>,比例就是 n/d。这就是"相似"的全部内容。</li>
       <li><b>只拖「近平面 n」</b> —— 小三角形跟着长大(它的一条腿长度就是 n),但<b>两块颜色的边界比值 n/d 变了,读数却不变</b>。把两条放在一起看:几何在变、读数不变,这才是 n 被约掉的真正含义。</li>
       <li><b>盯住「深度值到底分给了谁」那张图,只拖「远平面 f_far」</b> —— 上面那条橙线的百分比几乎不动(默认 52.6%,f 拉大后逼近 <b>50%</b>),下面那条越来越短。<b>远平面拉多远都改变不了"最近的一倍视距独占一半以上"</b>。这不是配置问题,是投影矩阵 A、B 两个系数解出来的必然。</li>
+      <li><b>盯住「矩阵吐出来的是 clip」那张展开表,拖任意滑块</b> —— 上半段(矩阵乘加)和下半段(闭式公式)永远是同一个数,它们之间只差一步 <b>除以 w</b>。这就是"矩阵和公式长得不像"的全部原因:矩阵输出 clip,公式算的是 NDC。而除法之所以被拎出来,是因为矩阵只能乘加,写不下除法。</li>
     </ol>
     <p class="cap" style="margin-top:10px">还有一件渲染不出来、只能靠数学说的事:<b>从眼睛 E 本身看,这两个三角形完全重合</b>(P 与 p′ 落在屏幕的同一个像素上)。这不是巧合,这就是"投影"的定义,也是为什么 y_ndc 只取决于比值 y/d。测试文件里有对应的断言钉着它。</p>
     <p class="cap" style="margin-top:10px">aspect 是参数不是常数:它等于画布的 宽/高,窗口一变形它就变。这里做成滑块,是为了让你亲手看到"它只影响 x"。</p>
@@ -137,6 +153,10 @@
  * 三套读数各有一条"本质":
  *   x_ndc、y_ndc —— 相似三角形。本质是"两条坡度之比",斜率来自同一眼点。
  *   z_ndc        —— 不是三角形。它是 1/d 的线性插值,这才是 Z-fighting 的根。
+ *
+ * 还有一个"矩阵展开"面板:把 M·v 的四个分量逐行算出来,再除以 w 得到 NDC,
+ * 和读数里的闭式公式并排放 —— 回答"为什么两者长得不一样"。
+ * 答案写在该面板下方:矩阵只能做乘加,除法只能靠 w 带出去。
  *
  * 渲染只用 engine.js 门面:线框 = 'line-list' + 恒等索引。
  * 几何每帧在 CPU 重建(几十个顶点),用 engine.updateMesh 就地覆写显存。
@@ -487,6 +507,60 @@ function syncReadouts() {
     + `也就是说<b>最近的一倍视距,无论远平面设多远,永远拿走至少一半的深度值</b>。`;
 }
 
+// ── 矩阵展开:clip → 除以 w → NDC ────────────────────────────────
+// 这个面板回答的是"矩阵乘出来和闭式公式长得不一样,为什么不直接把公式写进去"。
+// 答案:矩阵只能做乘加,除法在数学上写不进去;能塞进矩阵的只有分子,
+// 分母被挤到第 4 个分量 w 上,由硬件在顶点之后做一次透视除法补上。
+// 所以这里刻意把"矩阵输出"和"闭式公式"分两段摆开,让数字自己对上。
+function syncTrace() {
+  const { aspect, n, f, x, y, d } = state;
+  const ff = 1 / tanHalf();      // 1/tan(fovY/2) = 矩阵的 m[0]·aspect 与 m[5]
+  const A = f / (n - f);         // m[10]
+  const B = (n * f) / (n - f);   // m[14]
+
+  const cx = (ff / aspect) * x;  // x_clip:只有乘,没有除
+  const cy = ff * y;             // y_clip
+  const cz = A * (-d) + B;       // z_clip:z = -d,代进 A·z + B
+  const W = d;                   // w = -z = d,三个分量共用这一个分母
+
+  const N = (v) => v.toFixed(4);
+  const lines = [
+    `<span class="k">输入</span>  x = ${N(x)}   y = ${N(y)}   z = -d = ${N(-d)}`,
+    ``,
+    `<span class="k">①</span> 矩阵:四行都只做乘加 -> 输出 clip`,
+    `   x_clip = (f/aspect) * x`,
+    `          = ${N(ff / aspect)} * ${N(x)}`,
+    `          = <span class="num">${N(cx)}</span>`,
+    `   y_clip = f * y`,
+    `          = ${N(ff)} * ${N(y)}`,
+    `          = <span class="num">${N(cy)}</span>`,
+    `   z_clip = A*z + B`,
+    `          = ${N(A)} * ${N(-d)} + ${N(B)}`,
+    `          = <span class="num">${N(cz)}</span>`,
+    `   w      = -z`,
+    `          = <span class="den">${N(W)}</span>`,
+    ``,
+    `<span class="k">②</span> 除以 w:硬件做一次,三个分量共用`,
+    `   x_ndc = ${N(cx)} / <span class="den">${N(W)}</span> = <span class="num">${N(cx / W)}</span>`,
+    `   y_ndc = ${N(cy)} / <span class="den">${N(W)}</span> = <span class="num">${N(cy / W)}</span>`,
+    `   z_ndc = ${N(cz)} / <span class="den">${N(W)}</span> = <span class="num">${N(cz / W)}</span>`,
+    ``,
+    `<span class="k">③</span> 读数里那些闭式公式,给的是同一个数`,
+    `   x/(d*tan*aspect)          = <span class="num">${N(xNdc())}</span>`,
+    `   y/(d*tan)                 = <span class="num">${N(yNdc())}</span>`,
+    `   f_far*(d-n)/(d*(f_far-n)) = <span class="num">${N(zNdcAt(d))}</span>`,
+  ];
+  el('fx-trace').innerHTML = lines.join('\n');
+
+  el('cap-trace').innerHTML =
+    `矩阵那四行只做乘加,它吐出来的是 <b>clip</b>;你写的闭式公式是 <b>NDC</b>,`
+    + `两者之间只差「除以 w」这一步。`
+    + `<br><br>除法在数学上进不了矩阵 —— 矩阵乘法只能"乘 + 加"。`
+    + `所以能塞进矩阵的只有分子,分母被挤到第 4 个分量 <b>w</b> 上,`
+    + `由硬件在顶点着色器之后统一做一次。三个分量共用同一个 w(都等于 −z),`
+    + `所以这一次除法能把三个一起补齐 —— 这就是齐次坐标存在的理由。`;
+}
+
 // ── 2D 图表:深度映射曲线 ────────────────────────────────────────
 function fitCanvas(cv, w, h) {
   const dpr = window.devicePixelRatio || 1;
@@ -765,6 +839,7 @@ function refreshAll() {
   syncSliderBounds();
   syncLabels();
   syncReadouts();
+  syncTrace();
   drawSim();
   drawCurve();
   drawBudget();
